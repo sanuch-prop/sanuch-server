@@ -1,0 +1,460 @@
+const CONFIG = require("./config");
+const storage = require("./storage");
+const { analyzeStrategy } = require("./signalEngine");
+const { normalizeSymbol, nowIso } = require("./utils");
+const { allAssetSymbols } = require("./assetUniverse");
+
+const REASON_RU = {
+  AUTO_DISABLED:          "Авто-режим выключен.",
+  NO_SIGNAL:              "Сигнала нет: индикатор ждёт условия.",
+  LOW_SCORE:              "Слабый сигнал: оценка ниже минимальной.",
+  COOLDOWN:               "Пауза: повторный вход запрещён (cooldown).",
+  LOW_PAYOUT:             "Payout ниже минимального порога.",
+  DUPLICATE_TASK:         "Дублирующаяся задача уже в очереди.",
+  TASK_CREATE_FAILED:     "Ошибка создания задачи.",
+  SIGNAL_LOST:            "Сигнал снят, ожидание сброшено.",
+  DIRECTION_CHANGED:      "Направление изменилось, сброс.",
+  WAIT_STEP1_SAME_CANDLE: "Шаг 1/3: та же свеча, ждём новую.",
+  CONFIRMED_STEP2:        "Шаг 2/3: подтверждение получено, ждём свечу для входа.",
+  WAIT_STEP2_SAME_CANDLE: "Шаг 2/3: та же свеча, ждём новую.",
+  STEP1_SIGNAL:           "Шаг 1/3: сигнал найден, ждём подтверждение.",
+  STEP3_OPEN:             "Шаг 3/3: открытие сделки!",
+  TRADE_ALREADY_OPEN:     "Блок: по этой паре уже есть открытая сделка.",
+  TASK_PENDING:           "Блок: задача по этой паре ещё ожидает исполнения."
+};
+
+class SignalRunner {
+  constructor({ tickStore, candleBuilder, taskStore, payoutStore, tradeTracker }) {
+    this.tickStore = tickStore;
+    this.candleBuilder = candleBuilder;
+    this.taskStore = taskStore;
+    this.payoutStore = payoutStore;
+    this.tradeTracker = tradeTracker || null;
+
+    this.config = {
+      ...CONFIG.autoSignal,
+      ...storage.readJson("auto-config.json", {})
+    };
+
+    this.lastScanAt = null;
+    this.lastCreatedAtByKey = {};
+    this.lastSignals = {};
+    this.lastSkips = {};      // last skip reason per symbol: { symbol → { reason, message, at } }
+    this.createdTotal = 0;
+    this.duplicateTotal = 0;
+    this.skippedTotal = 0;
+    this.lastEvent = null;
+
+    // 3-candle confirmation state: { confirmKey → { step, action, candleOpenTime, signal, seenAt } }
+    this.pendingConfirm = {};
+
+    // Event log (max 120 entries, shown in UI)
+    this.eventLog = [];
+  }
+
+  // Считает шаг мартингейла и ставку для данного символа.
+  // Формула авто-расчёта: (сумма убытков + базовая ставка) / (payout / 100).
+  // Работает для любого payout от 60% до 92%.
+  // WIN сбрасывает цепочку. DRAW/NO_PRICE нейтральны.
+  getMartingaleInfo(symbol, currentPayoutPercent) {
+    const cfg = this.config;
+    const baseAmount = Number(cfg.amount) || 1;
+    if (!cfg.martingaleEnabled) return { amount: baseAmount, step: 0 };
+
+    const maxSteps = Math.max(1, Number(cfg.martingaleSteps) || 3);
+
+    const trades = this.tradeTracker?.trades || [];
+    const closed = trades
+      .filter(t => t.symbol === symbol && t.status === "CLOSED")
+      .sort((a, b) => (b.closedAtMs || 0) - (a.closedAtMs || 0));
+
+    let steps = 0;
+    let totalLosses = 0;
+    for (const t of closed) {
+      if (t.result === "LOSS") {
+        steps++;
+        totalLosses += Number(t.amount || baseAmount);
+        if (steps >= maxSteps) break;
+      } else if (t.result === "WIN") {
+        break;
+      }
+      // DRAW / NO_PRICE — нейтрально
+    }
+
+    if (steps === 0) return { amount: baseAmount, step: 0 };
+
+    const payout = Number(currentPayoutPercent || 0);
+    let amount;
+    if (payout >= 50) {
+      // Авто-расчёт: (все убытки + базовая прибыль-цель) / payout
+      amount = Math.round(((totalLosses + baseAmount) / (payout / 100)) * 100) / 100;
+    } else {
+      // Фолбек: фиксированный множитель (когда payout неизвестен)
+      const multiplier = Math.max(1.01, Number(cfg.martingaleMultiplier) || 2);
+      amount = Math.round(baseAmount * Math.pow(multiplier, steps) * 100) / 100;
+    }
+
+    return { amount, step: steps };
+  }
+
+  getMartingaleAmount(symbol, currentPayoutPercent) {
+    return this.getMartingaleInfo(symbol, currentPayoutPercent).amount;
+  }
+
+  _logEvent(level, symbol, message, extra = {}) {
+    const entry = {
+      time: nowIso(),
+      level,   // "info" | "confirm" | "trade" | "skip" | "error"
+      symbol: symbol || null,
+      message,
+      ...extra
+    };
+    this.eventLog.unshift(entry);
+    if (this.eventLog.length > 120) this.eventLog.length = 120;
+    this.lastEvent = { time: entry.time, message: symbol ? `${symbol}: ${message}` : message };
+    return entry;
+  }
+
+  updateConfig(patch = {}) {
+    const allowed = [
+      "enabled", "userId", "clientId", "accountMode", "watchlist",
+      "subscribeAllAssets", "timeframe", "fast", "slow", "amount",
+      "expirySec", "minScore", "minAgree", "aggregation", "indicators",
+      "cooldownMs", "source", "usePayoutFilter", "minPayoutPercent",
+      "useConfirmRule",
+      "martingaleEnabled", "martingaleMultiplier", "martingaleSteps", "martingaleReset"
+    ];
+
+    for (const key of allowed) {
+      if (Object.prototype.hasOwnProperty.call(patch, key)) {
+        this.config[key] = patch[key];
+      }
+    }
+
+    // When global timeframe changes, propagate to all indicator configs
+    if ("timeframe" in patch && !("indicators" in patch) && Array.isArray(this.config.indicators)) {
+      this.config.indicators = this.config.indicators.map(ind => ({ ...ind, timeframe: this.config.timeframe }));
+    }
+
+    if (typeof this.config.watchlist === "string") {
+      this.config.watchlist = this.config.watchlist
+        .split(",")
+        .map(s => normalizeSymbol(s))
+        .filter(Boolean);
+    }
+
+    if (Array.isArray(this.config.watchlist)) {
+      this.config.watchlist = this.config.watchlist.map(s => normalizeSymbol(s)).filter(Boolean);
+    }
+
+    this.save();
+    return this.status();
+  }
+
+  start(patch = {}) {
+    this.updateConfig({ ...patch, enabled: true });
+    this._logEvent("info", null, "Авто-режим запущен.");
+    return this.status();
+  }
+
+  stop() {
+    this.config.enabled = false;
+    this.pendingConfirm = {};
+    this._logEvent("info", null, "Авто-режим остановлен. Ожидания сброшены.");
+    this.save();
+    return this.status();
+  }
+
+  getSymbols() {
+    let syms;
+    const list = Array.isArray(this.config.watchlist) ? this.config.watchlist.filter(Boolean) : [];
+
+    if (list.length) {
+      syms = [...new Set(list.map(s => normalizeSymbol(s)).filter(Boolean))];
+    } else if (this.config.subscribeAllAssets !== false) {
+      const payoutSymbols = this.payoutStore?.list({ limit: 5000 }).map(a => a.symbol).filter(Boolean) || [];
+      const tickSymbols = this.tickStore.getSymbols();
+      syms = [...new Set([...allAssetSymbols(), ...payoutSymbols, ...tickSymbols].map(s => normalizeSymbol(s)).filter(Boolean))];
+    } else {
+      syms = this.tickStore.getSymbols();
+    }
+
+    // Prefer OTC in all cases: if both EURUSD and EURUSD_otc exist, keep only EURUSD_otc
+    const otcSet = new Set(syms.filter(s => s.endsWith("_otc")));
+    return syms.filter(s => s.endsWith("_otc") || !otcSet.has(s + "_otc"));
+  }
+
+  scan({ force = false } = {}) {
+    this.lastScanAt = nowIso();
+
+    if (!this.config.enabled && !force) {
+      return { ok: true, enabled: false, created: [], skipped: [{ reason: "AUTO_DISABLED" }] };
+    }
+
+    // Удалить устаревшие ожидания (старше 10 минут)
+    const staleCutoff = Date.now() - 10 * 60 * 1000;
+    for (const key of Object.keys(this.pendingConfirm)) {
+      if ((this.pendingConfirm[key].seenAt || 0) < staleCutoff) {
+        this._logEvent("skip", key.split("|")[0], `Ожидание устарело (>10 мин), сброс.`);
+        delete this.pendingConfirm[key];
+      }
+    }
+
+    const useConfirm = this.config.useConfirmRule !== false; // по умолчанию включено
+    const created = [];
+    const skipped = [];
+    const skip = (symbol, reason, message, extra = {}) => {
+      const entry = { symbol, reason, message, ...extra };
+      skipped.push(entry);
+      this.skippedTotal += 1;
+      if (symbol) this.lastSkips[symbol] = { reason, message: message || reason, at: Date.now() };
+    };
+    const symbols = this.getSymbols();
+
+    for (const symbol of symbols) {
+      const signal = analyzeStrategy({
+        symbol,
+        config: this.config,
+        getCandles: (timeframe, limit = 260) => this.candleBuilder.getCandles(symbol, timeframe || this.config.timeframe, limit, true)
+      });
+
+      this.lastSignals[symbol] = signal;
+
+      // --- Нет сигнала ---
+      if (!signal.ready || !signal.action || signal.side === "WAIT") {
+        // Если было ожидание — сбросить
+        const pendingKeysForSymbol = Object.keys(this.pendingConfirm).filter(k => k.startsWith(symbol + "|"));
+        for (const k of pendingKeysForSymbol) {
+          this._logEvent("skip", symbol, REASON_RU.SIGNAL_LOST + ` (был шаг ${this.pendingConfirm[k].step}/3)`);
+          delete this.pendingConfirm[k];
+        }
+        const notReadyReason = !signal.ready
+          ? (signal.reasons ? signal.reasons[0] : "Мало данных для расчёта.")
+          : "Сигнала нет: индикатор ждёт условия.";
+        skip(symbol, "NO_SIGNAL", notReadyReason, { signal });
+        continue;
+      }
+
+      // --- Низкий score ---
+      if (Number(signal.score) < Number(this.config.minScore || 1)) {
+        skip(symbol, "LOW_SCORE", REASON_RU.LOW_SCORE + ` Оценка ${signal.score} < мин. ${this.config.minScore}.`, { signal });
+        continue;
+      }
+
+      // --- Блок: одна сделка на символ ---
+      // Запрещаем открывать второй контракт пока первый не закрылся.
+      // Сбрасываем pendingConfirm чтобы 3-свечное подтверждение начиналось заново после закрытия.
+      {
+        const hasOpenTrade = this.tradeTracker
+          ? this.tradeTracker.trades.some(t => t.symbol === symbol && t.status === "OPEN")
+          : false;
+        const hasPendingTask = this.taskStore
+          ? this.taskStore.tasks.some(t => t.symbol === symbol && ["CREATED", "DELIVERED"].includes(t.status))
+          : false;
+
+        if (hasOpenTrade || hasPendingTask) {
+          // Сбрасываем состояние подтверждения — начнём заново когда пара освободится
+          for (const k of Object.keys(this.pendingConfirm).filter(k => k.startsWith(symbol + "|"))) {
+            delete this.pendingConfirm[k];
+          }
+          const reason = hasOpenTrade ? "TRADE_ALREADY_OPEN" : "TASK_PENDING";
+          const msg = hasOpenTrade
+            ? `${REASON_RU.TRADE_ALREADY_OPEN} (${symbol})`
+            : `${REASON_RU.TASK_PENDING} (${symbol})`;
+          skip(symbol, reason, msg);
+          continue;
+        }
+      }
+
+      // --- Правило 3 свечей (включено по умолчанию) ---
+      if (useConfirm) {
+        const timeframe = signal.timeframe || this.config.timeframe;
+        const candleOpenTime = Number(signal.lastCandle?.openTime || 0);
+        const confirmKey = `${symbol}|${timeframe}|${signal.action}`;
+        const pending = this.pendingConfirm[confirmKey];
+
+        // Нет ожидания — шаг 1: сигнал найден
+        if (!pending) {
+          this.pendingConfirm[confirmKey] = { step: 1, action: signal.action, candleOpenTime, signal, seenAt: Date.now() };
+          const indName = signal.chosenResults?.[0]?.indicator || signal.results?.[0]?.indicator || "Индикатор";
+          const why = signal.reasons ? signal.reasons[0] : "";
+          this._logEvent("info", symbol, `${REASON_RU.STEP1_SIGNAL} ${signal.side} · ${indName}. ${why}`);
+          skip(symbol, "ОЖИДАНИЕ_ПОДТВЕРЖДЕНИЯ", REASON_RU.STEP1_SIGNAL, { step: 1, signal });
+          continue;
+        }
+
+        // Направление изменилось — сброс и шаг 1
+        if (pending.action !== signal.action) {
+          delete this.pendingConfirm[confirmKey];
+          this.pendingConfirm[confirmKey] = { step: 1, action: signal.action, candleOpenTime, signal, seenAt: Date.now() };
+          this._logEvent("skip", symbol, REASON_RU.DIRECTION_CHANGED + ` → ${signal.side}`);
+          skip(symbol, "НАПРАВЛЕНИЕ_ИЗМЕНИЛОСЬ", REASON_RU.DIRECTION_CHANGED, { signal });
+          continue;
+        }
+
+        // Шаг 1: ждём новой свечи → шаг 2
+        if (pending.step === 1) {
+          const candleAdvanced = candleOpenTime > 0 && candleOpenTime > pending.candleOpenTime;
+          // Fallback: если candleOpenTime=0 (нет данных) — считаем шаг пройденным через 2 минуты
+          const timeoutAdvance = candleOpenTime === 0 && (Date.now() - pending.seenAt) > 2 * 60 * 1000;
+          if (!candleAdvanced && !timeoutAdvance) {
+            skip(symbol, "ОЖИДАНИЕ_СВЕЧИ_1", REASON_RU.WAIT_STEP1_SAME_CANDLE, { signal });
+            continue;
+          }
+          pending.step = 2;
+          pending.candleOpenTime = candleOpenTime;
+          pending.signal = signal;
+          pending.seenAt = Date.now();
+          this._logEvent("confirm", symbol, REASON_RU.CONFIRMED_STEP2 + ` ${signal.side}`);
+          skip(symbol, "ПОДТВЕРЖДЕНИЕ_ПОЛУЧЕНО", REASON_RU.CONFIRMED_STEP2, { step: 2, signal });
+          continue;
+        }
+
+        // Шаг 2: ждём новой свечи → шаг 3 (вход)
+        if (pending.step === 2) {
+          const candleAdvanced = candleOpenTime > 0 && candleOpenTime > pending.candleOpenTime;
+          const timeoutAdvance = candleOpenTime === 0 && (Date.now() - pending.seenAt) > 2 * 60 * 1000;
+          if (!candleAdvanced && !timeoutAdvance) {
+            skip(symbol, "ОЖИДАНИЕ_СВЕЧИ_2", REASON_RU.WAIT_STEP2_SAME_CANDLE, { signal });
+            continue;
+          }
+          // Шаг 3 — открытие сделки
+          delete this.pendingConfirm[confirmKey];
+          this._logEvent("trade", symbol, REASON_RU.STEP3_OPEN + ` ${signal.action} $${this.config.amount}`);
+          // Продолжаем ниже — создаём задачу
+        }
+      }
+      // --- Конец правила 3 свечей ---
+
+      const lastCandle = signal.lastCandle;
+      const signalKey = [
+        "AUTO",
+        this.config.accountMode,
+        symbol,
+        signal.timeframe || this.config.timeframe,
+        signal.expirySec || this.config.expirySec,
+        signal.action,
+        signal.signalHash || lastCandle?.openTime || "no-candle"
+      ].join("|");
+
+      const lastCreatedAt = this.lastCreatedAtByKey[signalKey] || 0;
+      if (Date.now() - lastCreatedAt < Number(this.config.cooldownMs || 15000)) {
+        skip(symbol, "COOLDOWN", REASON_RU.COOLDOWN, { signalKey });
+        continue;
+      }
+
+      const rawPayout = this.payoutStore?.get(symbol) || null;
+      // Discard payout data older than 2 hours — stale values cause wrong pnl in history
+      const payoutAgeMs = rawPayout ? (Date.now() - (rawPayout.updatedAtMs || 0)) : Infinity;
+      const payout = payoutAgeMs < 2 * 60 * 60 * 1000 ? rawPayout : null;
+
+      if (this.config.usePayoutFilter && payout && Number(payout.payoutPercent) < Number(this.config.minPayoutPercent || 75)) {
+        skip(symbol, "LOW_PAYOUT", REASON_RU.LOW_PAYOUT + ` ${payout.payoutPercent}% < ${this.config.minPayoutPercent}%`, { payout, signal });
+        continue;
+      }
+
+      const latest = this.tickStore.getLatest(symbol);
+      const signalPrice = latest?.price ?? lastCandle?.close ?? null;
+
+      // Не открывать сделку если нет свежих котировок (тик старше 30 секунд)
+      const tickAgeSec = latest ? (Date.now() / 1000 - Number(latest.serverTime || 0)) : Infinity;
+      if (!latest || tickAgeSec > 30) {
+        skip(symbol, "STALE_TICK", `Нет свежих котировок: ${tickAgeSec.toFixed(1)}с`, { tickAgeSec });
+        continue;
+      }
+
+      const mgEnabled  = !!this.config.martingaleEnabled;
+      const baseAmount = Number(this.config.amount) || 1;
+      const payoutPct  = payout?.payoutPercent || null;
+      const mgInfo     = mgEnabled ? this.getMartingaleInfo(symbol, payoutPct) : { amount: baseAmount, step: 0 };
+      const tradeAmount = Number(signal.amount || mgInfo.amount);
+      const mgStep     = mgInfo.step;
+
+      if (mgEnabled && mgStep > 0) {
+        this._logEvent("info", symbol, `Мартингейл шаг ${mgStep}: ставка $${tradeAmount} (база $${baseAmount}${payoutPct ? `, выплата ${payoutPct}%` : ""})`);
+      }
+
+      const taskResult = this.taskStore.createOpenTradeTask({
+        userId: this.config.userId,
+        clientId: this.config.clientId,
+        accountMode: this.config.accountMode,
+        symbol,
+        action: signal.action,
+        amount: tradeAmount,
+        expirySec: Number(signal.expirySec || this.config.expirySec),
+        source: this.config.source,
+        signalId: `${signalKey}`,
+        signalPrice,
+        reason: signal.reasons ? signal.reasons.join(" | ") : "",
+        idemKey: signalKey,
+        meta: {
+          auto: true,
+          martingale: mgEnabled ? { step: mgStep, baseAmount, tradeAmount } : null,
+          strategy: {
+            name: this.config.strategyName || "Моя стратегия",
+            indicators: ((signal.chosenResults && signal.chosenResults.length ? signal.chosenResults : signal.results || []))
+              .filter(i => i.side === signal.side)
+              .map(i => ({ id: i.id, name: i.indicator || i.name || i.id, timeframe: i.timeframe, expirySec: i.expirySec, settings: i.settings || {} })),
+            minAgree: signal.minAgree,
+            activeCount: signal.activeCount,
+            buyCount: signal.buyCount,
+            sellCount: signal.sellCount
+          },
+          indicatorResults: signal.results || [],
+          signal,
+          payout
+        }
+      });
+
+      if (taskResult.ok) {
+        this.lastCreatedAtByKey[signalKey] = Date.now();
+        this.createdTotal += 1;
+        created.push(taskResult.task);
+        this._logEvent("trade", symbol, `Задача создана: ${signal.action} ${symbol} $${tradeAmount} ${signal.expirySec || this.config.expirySec}с`, { taskId: taskResult.task.id });
+      } else if (taskResult.error === "DUPLICATE_TASK") {
+        this.duplicateTotal += 1;
+        skipped.push({ symbol, reason: "DUPLICATE_TASK", message: REASON_RU.DUPLICATE_TASK });
+      } else {
+        const errMsg = (taskResult.errors || []).join("; ") || REASON_RU.TASK_CREATE_FAILED;
+        this._logEvent("error", symbol, `Ошибка создания задачи: ${errMsg}`);
+        skipped.push({ symbol, reason: "TASK_CREATE_FAILED", message: errMsg, result: taskResult });
+      }
+    }
+
+    return { ok: true, enabled: this.config.enabled, scanned: symbols.length, created, skipped };
+  }
+
+  status() {
+    // Собираем текущие мартингейл-ставки по символам из вотчлиста
+    const martingaleAmounts = {};
+    if (this.config.martingaleEnabled) {
+      const symbols = this.getSymbols().slice(0, 50);
+      for (const s of symbols) {
+        const pct = this.payoutStore?.get(s)?.payoutPercent || null;
+        const amt = this.getMartingaleAmount(s, pct);
+        if (amt !== Number(this.config.amount)) martingaleAmounts[s] = amt;
+      }
+    }
+
+    return {
+      ok: true,
+      config: this.config,
+      lastScanAt: this.lastScanAt,
+      createdTotal: this.createdTotal,
+      duplicateTotal: this.duplicateTotal,
+      skippedTotal: this.skippedTotal,
+      lastEvent: this.lastEvent,
+      lastSignals: this.lastSignals,
+      lastSkips: this.lastSkips,
+      pendingConfirm: this.pendingConfirm,
+      eventLog: this.eventLog.slice(0, 40),
+      martingaleAmounts
+    };
+  }
+
+  save() {
+    storage.writeJson("auto-config.json", this.config);
+  }
+}
+
+module.exports = SignalRunner;

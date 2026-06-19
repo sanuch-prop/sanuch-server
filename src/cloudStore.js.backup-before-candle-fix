@@ -1,0 +1,174 @@
+﻿const CONFIG = require("./config");
+function nowIso(){return new Date().toISOString();}
+class CloudStore{
+  constructor(){this.mode=String(process.env.STORAGE_MODE||"file").toLowerCase();this.databaseUrl=process.env.DATABASE_URL||"";this.enabled=this.mode==="postgres"&&!!this.databaseUrl;this.pool=null;this.pgMissing=false;this.lastError=null;this.startedAt=nowIso();}
+  async init(){if(!this.enabled)return this.status();let pg;try{pg=require("pg");}catch(err){this.pgMissing=true;this.lastError="pg package is not installed. Run npm install in server folder.";console.warn("[cloudStore]",this.lastError);return this.status();}this.pool=new pg.Pool({connectionString:this.databaseUrl,ssl:process.env.PGSSL==="false"?false:{rejectUnauthorized:false}});await this.pool.query("select 1");await this.ensureSchema();console.log("[cloudStore] PostgreSQL storage connected");return this.status();}
+  async ensureSchema(){if(!this.pool)return;await this.pool.query(`
+create table if not exists market_ticks(id bigserial primary key,symbol text not null,wire_symbol text,price double precision not null,server_time double precision not null,source text,received_at timestamptz not null default now(),unique(symbol,server_time,price));
+create index if not exists idx_market_ticks_symbol_time on market_ticks(symbol,server_time desc);
+create table if not exists market_candles(symbol text not null,timeframe text not null,open_time double precision not null,close_time double precision not null,open double precision not null,high double precision not null,low double precision not null,close double precision not null,ticks integer not null default 1,is_closed boolean not null default false,first_server_time double precision,last_server_time double precision,updated_at timestamptz not null default now(),primary key(symbol,timeframe,open_time));
+create index if not exists idx_market_candles_symbol_tf_time on market_candles(symbol,timeframe,open_time desc);
+create table if not exists users(id text primary key,email text,status text not null default 'active',created_at timestamptz not null default now());
+create table if not exists user_strategy_settings(id bigserial primary key,user_id text not null,name text not null,settings jsonb not null,is_active boolean not null default false,created_at timestamptz not null default now());
+create table if not exists trade_results(id bigserial primary key,user_id text,client_id text,task_id text,symbol text,action text,amount double precision,expiry_sec integer,result text,profit double precision,meta jsonb,created_at timestamptz not null default now());`);}
+  async saveTicks(ticks){if(!this.pool||!Array.isArray(ticks)||!ticks.length)return{ok:true,skipped:true};const clean=ticks.filter(t=>t&&t.symbol&&Number.isFinite(Number(t.price))&&Number.isFinite(Number(t.serverTime)));if(!clean.length)return{ok:true,inserted:0};const values=[],params=[];clean.forEach((t,i)=>{const b=i*6;values.push(`($${b+1},$${b+2},$${b+3},$${b+4},$${b+5},$${b+6})`);params.push(t.symbol,t.wireSymbol||t.symbol,Number(t.price),Number(t.serverTime),t.source||"PO_UPDATE_STREAM",t.receivedAt?new Date(t.receivedAt):new Date());});await this.pool.query(`insert into market_ticks(symbol,wire_symbol,price,server_time,source,received_at) values ${values.join(",")} on conflict(symbol,server_time,price) do nothing`,params);return{ok:true,inserted:clean.length};}
+  async saveCandles(candles) {
+    if (!this.pool || !Array.isArray(candles) || !candles.length) {
+      return { ok: true, skipped: true };
+    }
+
+    const toNum = (v, fallback = 0) => {
+      const n = Number(v);
+      return Number.isFinite(n) ? n : fallback;
+    };
+
+    const getSymbol = (c) => String(c.symbol || c.asset || c.name || "").trim();
+    const getTimeframe = (c) => String(c.timeframe || c.tf || c.period || "M1").trim();
+
+    const getOpenTime = (c) => {
+      const raw =
+        c.open_time ??
+        c.openTime ??
+        c.start_time ??
+        c.startTime ??
+        c.time ??
+        c.ts ??
+        c.server_time;
+
+      const n = Number(raw);
+      if (Number.isFinite(n)) return n;
+
+      const parsed = Date.parse(raw);
+      if (Number.isFinite(parsed)) return Math.floor(parsed / 1000);
+
+      return null;
+    };
+
+    const unique = new Map();
+
+    for (const c of candles) {
+      if (!c) continue;
+
+      const symbol = getSymbol(c);
+      const timeframe = getTimeframe(c);
+      const open_time = getOpenTime(c);
+
+      if (!symbol || !timeframe || open_time === null) continue;
+
+      const open = toNum(c.open, NaN);
+      const high = toNum(c.high, NaN);
+      const low = toNum(c.low, NaN);
+      const close = toNum(c.close, NaN);
+
+      if (
+        !Number.isFinite(open) ||
+        !Number.isFinite(high) ||
+        !Number.isFinite(low) ||
+        !Number.isFinite(close)
+      ) {
+        continue;
+      }
+
+      const close_time = toNum(c.close_time ?? c.closeTime ?? c.end_time ?? c.endTime, open_time);
+      const ticks = Math.max(0, Math.trunc(toNum(c.ticks ?? c.tick_count ?? c.volume, 0)));
+      const is_closed = Boolean(c.is_closed ?? c.isClosed ?? false);
+      const first_server_time = toNum(c.first_server_time ?? c.firstServerTime ?? open_time, open_time);
+      const last_server_time = toNum(c.last_server_time ?? c.lastServerTime ?? close_time, close_time);
+
+      const row = {
+        symbol,
+        timeframe,
+        open_time,
+        close_time,
+        open,
+        high,
+        low,
+        close,
+        ticks,
+        is_closed,
+        first_server_time,
+        last_server_time,
+      };
+
+      const key = `${symbol}|${timeframe}|${open_time}`;
+      const prev = unique.get(key);
+
+      if (!prev) {
+        unique.set(key, row);
+      } else {
+        unique.set(key, {
+          ...prev,
+          close_time: Math.max(prev.close_time, row.close_time),
+          high: Math.max(prev.high, row.high),
+          low: Math.min(prev.low, row.low),
+          close: row.close,
+          ticks: Math.max(prev.ticks, row.ticks),
+          is_closed: prev.is_closed || row.is_closed,
+          first_server_time: Math.min(prev.first_server_time, row.first_server_time),
+          last_server_time: Math.max(prev.last_server_time, row.last_server_time),
+        });
+      }
+    }
+
+    const clean = Array.from(unique.values());
+
+    if (!clean.length) {
+      return { ok: true, skipped: true };
+    }
+
+    const cols = [
+      "symbol",
+      "timeframe",
+      "open_time",
+      "close_time",
+      "open",
+      "high",
+      "low",
+      "close",
+      "ticks",
+      "is_closed",
+      "first_server_time",
+      "last_server_time",
+    ];
+
+    const values = [];
+
+    const placeholders = clean
+      .map((row, i) => {
+        const base = i * cols.length;
+        for (const col of cols) values.push(row[col]);
+        return `(${cols.map((_, j) => `$${base + j + 1}`).join(",")})`;
+      })
+      .join(",");
+
+    await this.pool.query(
+      `
+      insert into market_candles (${cols.join(",")})
+      values ${placeholders}
+      on conflict (symbol, timeframe, open_time)
+      do update set
+        close_time = excluded.close_time,
+        open = excluded.open,
+        high = greatest(market_candles.high, excluded.high),
+        low = least(market_candles.low, excluded.low),
+        close = excluded.close,
+        ticks = greatest(market_candles.ticks, excluded.ticks),
+        is_closed = market_candles.is_closed OR excluded.is_closed,
+        first_server_time = least(market_candles.first_server_time, excluded.first_server_time),
+        last_server_time = greatest(market_candles.last_server_time, excluded.last_server_time),
+        updated_at = now()
+      `,
+      values
+    );
+
+    return {
+      ok: true,
+      count: clean.length,
+      received: candles.length,
+      deduped: candles.length - clean.length,
+    };
+  }async saveTradeResult(row){if(!this.pool||!row)return{ok:true,skipped:true};await this.pool.query(`insert into trade_results(user_id,client_id,task_id,symbol,action,amount,expiry_sec,result,profit,meta) values($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`,[row.userId||null,row.clientId||null,row.taskId||null,row.symbol||null,row.action||null,Number(row.amount||0),Number(row.expirySec||0),row.result||null,Number(row.profit||0),row.meta||{}]);return{ok:true};}
+  status(){return{ok:true,mode:this.enabled&&this.pool?"postgres":"file-memory",desiredMode:this.mode,postgresConfigured:!!this.databaseUrl,postgresConnected:!!this.pool,pgMissing:this.pgMissing,lastError:this.lastError,startedAt:this.startedAt,note:this.pool?"Market data is mirrored to PostgreSQL.":"Running with file/memory fallback. Set STORAGE_MODE=postgres and DATABASE_URL for serious shared storage."};}
+}
+module.exports=new CloudStore();
+
