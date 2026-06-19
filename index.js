@@ -181,6 +181,10 @@ async function handle(req, res) {
       return sendHtml(res, 200, dashboardPage());
     }
 
+    if (req.method === "GET" && pathname === "/privacy") {
+      return sendHtml(res, 200, `<!DOCTYPE html><html lang="ru"><head><meta charset="utf-8"><title>Privacy Policy — Sanuch Trading</title><style>body{font-family:sans-serif;max-width:700px;margin:40px auto;padding:0 20px;color:#222;line-height:1.6}h1{color:#1a1a2e}h2{color:#333}</style></head><body><h1>Privacy Policy — Sanuch Trading</h1><p>Last updated: June 2026</p><h2>Data Collection</h2><p>Sanuch Trading Chrome Extension does <strong>not</strong> collect, store, or transmit any personally identifiable information about users.</p><h2>Data Storage</h2><p>The extension stores user settings (indicator configurations, strategy preferences) locally in the browser using Chrome's built-in <code>chrome.storage.local</code> API. This data never leaves your device.</p><h2>Server Communication</h2><p>The extension communicates with our server (sanuch-server-production.up.railway.app) solely for license verification and trading signal synchronization. No personal data is sent — only an anonymous device identifier and license key.</p><h2>Third Parties</h2><p>We do not sell, trade, or transfer your data to any third parties.</p><h2>Contact</h2><p>If you have questions, contact: vasyadom8228@gmail.com</p></body></html>`);
+    }
+
     if (req.method === "GET" && pathname === "/health") {
       return send(res, 200, {
         ok: true,
