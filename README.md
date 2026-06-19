@@ -1,0 +1,2 @@
+# sanuch-server
+sanuch - jurnal
