@@ -1,7 +1,7 @@
 const CONFIG = {
   appName: "Sanuch Auto Trading",
   version: "2.4.2",
-  port: 8787,
+  port: Number(process.env.PORT) || 8787,
 
   storage: {
     autoSaveMs: 2000,
