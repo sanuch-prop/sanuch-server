@@ -1,6 +1,14 @@
 require("dotenv").config();
 const http = require("http");
 
+// Catch unhandled rejections so we can see what's crashing the server
+process.on("unhandledRejection", (reason, promise) => {
+  console.error("[FATAL] Unhandled Promise Rejection:", reason);
+});
+process.on("uncaughtException", (err) => {
+  console.error("[FATAL] Uncaught Exception:", err.message, err.stack);
+});
+
 const CONFIG = require("./src/config");
 const { parseJsonSafe, nowIso, normalizeSymbol } = require("./src/utils");
 const TickStore = require("./src/tickStore");

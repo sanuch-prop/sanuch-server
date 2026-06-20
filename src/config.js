@@ -4,7 +4,7 @@ const CONFIG = {
   port: Number(process.env.PORT) || 8787,
 
   storage: {
-    autoSaveMs: 2000,
+    autoSaveMs: 30000,
     maxTicksPerSymbol: 2000,
     maxCandlesPerKey: 110,
     dataDir: "data"

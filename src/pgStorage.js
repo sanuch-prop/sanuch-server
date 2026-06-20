@@ -13,9 +13,10 @@ function initPool() {
   pool = new Pool({
     connectionString: process.env.DATABASE_URL,
     ssl: sslEnabled ? { rejectUnauthorized: false } : false,
-    max: 3,
-    idleTimeoutMillis: 30000,
-    connectionTimeoutMillis: 10000,
+    max: 1,
+    idleTimeoutMillis: 10000,
+    connectionTimeoutMillis: 8000,
+    query_timeout: 8000,
   });
   pool.on("error", (err) => {
     console.warn("[pgStorage] pool error:", err.message);
