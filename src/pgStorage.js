@@ -33,12 +33,22 @@ async function ensureTable() {
   `);
 }
 
+// Keys that must NOT be persisted to PostgreSQL — ephemeral / streaming data.
+// Loading them at startup would cause OOM from unbounded array growth.
+const EPHEMERAL_KEYS = new Set(["ticks.jsonl"]);
+const EPHEMERAL_MAX = 2000; // max items kept in memory for ephemeral keys
+
 // Called once at server startup — loads all keys from PostgreSQL into memory.
 async function loadAll() {
   try {
     initPool();
     await ensureTable();
-    const { rows } = await pool.query("SELECT key, value FROM kv_store");
+    // Exclude ephemeral keys to avoid loading huge arrays at startup
+    const keys = [...EPHEMERAL_KEYS].map((_, i) => `$${i + 1}`).join(", ");
+    const { rows } = await pool.query(
+      `SELECT key, value FROM kv_store WHERE key NOT IN (${keys})`,
+      [...EPHEMERAL_KEYS]
+    );
     for (const row of rows) {
       cache[row.key] = row.value;
     }
@@ -54,7 +64,7 @@ function readJson(name, fallback) {
 
 function writeJson(name, data) {
   cache[name] = data;
-  if (!pool) return;
+  if (!pool || EPHEMERAL_KEYS.has(name)) return; // ephemeral — memory only
   pool.query(
     `INSERT INTO kv_store (key, value, updated_at)
      VALUES ($1, $2::jsonb, NOW())
@@ -66,6 +76,12 @@ function writeJson(name, data) {
 function appendJsonl(name, row) {
   const existing = Array.isArray(cache[name]) ? cache[name] : [];
   existing.push(row);
+  if (EPHEMERAL_KEYS.has(name)) {
+    // Keep only last EPHEMERAL_MAX items in memory, never write to DB
+    if (existing.length > EPHEMERAL_MAX) existing.splice(0, existing.length - EPHEMERAL_MAX);
+    cache[name] = existing;
+    return;
+  }
   writeJson(name, existing);
 }
 
