@@ -210,7 +210,6 @@ async function handle(req, res) {
         version: CONFIG.version,
         time: nowIso(),
         ticks: tickStore.state(),
-        candles: candleBuilder.state(),
         tasks: taskStore.state(),
         trades: { ...tradeTracker.stats(), byIndicator: tradeTracker.statsByIndicator() },
         payouts: payoutStore.state(),
