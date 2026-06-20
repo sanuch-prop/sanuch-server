@@ -708,6 +708,16 @@ async function handle(req, res) {
       return send(res, 200, { ok: true, ...licenseStore.getStatus(pid) });
     }
 
+    // POST /license/sync  { platform_id, total }  → синхронизирует счётчик с реальной историей
+    if (req.method === "POST" && pathname === "/license/sync") {
+      const body = parseJsonSafe(await readBody(req)) || {};
+      const pid = String(body.platform_id || "").trim();
+      if (!pid) return send(res, 400, { ok: false, error: "platform_id required" });
+      licenseStore.getOrCreate(pid);
+      const result = licenseStore.syncTrades(pid, body.total);
+      return send(res, 200, result);
+    }
+
     // POST /license/trade  { platform_id, count? }  → регистрирует сделки, возвращает ok/expired
     if (req.method === "POST" && pathname === "/license/trade") {
       const body = parseJsonSafe(await readBody(req)) || {};

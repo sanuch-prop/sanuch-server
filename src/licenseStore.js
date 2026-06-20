@@ -166,8 +166,21 @@ function resetTrial(platformId) {
   return true;
 }
 
+function syncTrades(platformId, total) {
+  const id = String(platformId).trim();
+  const t = Math.max(0, Number(total || 0));
+  const data = load();
+  if (!data[id]) return { ok: false };
+  const u = data[id];
+  if (u.status === "active") return { ok: true, status: "active", tradesUsed: u.tradesUsed };
+  u.tradesUsed = t;
+  save(data);
+  const expired = t >= TRIAL_TRADES;
+  return { ok: true, status: expired ? "expired" : "trial", tradesUsed: t, tradesLimit: TRIAL_TRADES };
+}
+
 function listAll() {
   return Object.values(load()).sort((a, b) => b.createdAt.localeCompare(a.createdAt));
 }
 
-module.exports = { getOrCreate, getStatus, getByCode, countTrade, activate, loginByKey, rebindKey, setStatus, resetTrial, listAll, TRIAL_TRADES };
+module.exports = { getOrCreate, getStatus, getByCode, countTrade, syncTrades, activate, loginByKey, rebindKey, setStatus, resetTrial, listAll, TRIAL_TRADES };
