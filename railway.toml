@@ -2,6 +2,6 @@
 builder = "nixpacks"
 
 [deploy]
-startCommand = "node index.js"
+startCommand = "node --max-old-space-size=2048 index.js"
 restartPolicyType = "on_failure"
 restartPolicyMaxRetries = 3
