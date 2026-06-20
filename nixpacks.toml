@@ -5,4 +5,4 @@ cmds = ["npm install"]
 cmds = []
 
 [start]
-cmd = "node --max-old-space-size=2048 index.js"
+cmd = "node --max-old-space-size=400 index.js"

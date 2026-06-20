@@ -34,8 +34,8 @@ async function ensureTable() {
 }
 
 // Keys that must NOT be persisted to PostgreSQL — ephemeral / streaming data.
-// Loading them at startup would cause OOM from unbounded array growth.
-const EPHEMERAL_KEYS = new Set(["ticks.jsonl"]);
+// Loading them at startup would cause OOM from unbounded growth.
+const EPHEMERAL_KEYS = new Set(["ticks.jsonl", "candles.json"]);
 const EPHEMERAL_MAX = 2000; // max items kept in memory for ephemeral keys
 
 // Called once at server startup — loads all keys from PostgreSQL into memory.
