@@ -29,7 +29,11 @@ function safeNumber(value, fallback = null) { const n = Number(value); return Nu
 function parseJsonSafe(text) { try { return JSON.parse(text); } catch { return null; } }
 function round(value, digits = 5) { const n = Number(value); return Number.isFinite(n) ? Number(n.toFixed(digits)) : null; }
 function symbolToLabel(symbol) {
-  const s = String(symbol || "").replace(/_otc$/i, " OTC").replace(/([A-Z]{3})([A-Z]{3})/, "$1/$2");
-  return s;
+  let s = String(symbol || "");
+  const isOtc = /_otc$/i.test(s);
+  s = s.replace(/_otc$/i, "");
+  // Only split exactly 6-letter forex pairs (e.g. EURUSD → EUR/USD)
+  if (/^[A-Z]{6}$/.test(s)) s = s.slice(0, 3) + "/" + s.slice(3);
+  return s + (isOtc ? " OTC" : "");
 }
 module.exports = { nowIso, makeId, makeRequestId, normalizeAccountMode, accountModeToIsDemo, normalizeAction, normalizeSymbol, symbolToLabel, safeNumber, parseJsonSafe, round };
