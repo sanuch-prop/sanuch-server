@@ -28,4 +28,8 @@ function normalizeSymbol(symbol) {
 function safeNumber(value, fallback = null) { const n = Number(value); return Number.isFinite(n) ? n : fallback; }
 function parseJsonSafe(text) { try { return JSON.parse(text); } catch { return null; } }
 function round(value, digits = 5) { const n = Number(value); return Number.isFinite(n) ? Number(n.toFixed(digits)) : null; }
-module.exports = { nowIso, makeId, makeRequestId, normalizeAccountMode, accountModeToIsDemo, normalizeAction, normalizeSymbol, safeNumber, parseJsonSafe, round };
+function symbolToLabel(symbol) {
+  const s = String(symbol || "").replace(/_otc$/i, " OTC").replace(/([A-Z]{3})([A-Z]{3})/, "$1/$2");
+  return s;
+}
+module.exports = { nowIso, makeId, makeRequestId, normalizeAccountMode, accountModeToIsDemo, normalizeAction, normalizeSymbol, symbolToLabel, safeNumber, parseJsonSafe, round };
