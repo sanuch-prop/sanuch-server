@@ -579,6 +579,17 @@ async function handle(req, res) {
       return send(res, 200, signalRunner.stop());
     }
 
+    if (req.method === "POST" && pathname === "/client/disconnect") {
+      const body = parseJsonSafe(await readBody(req));
+      const clientId = body?.clientId || req.headers["x-sanuch-client-id"] || null;
+      if (!clientId) return send(res, 400, { ok: false, error: "NO_CLIENT_ID" });
+      const cancelled = taskStore.cancelByClient(clientId);
+      signalRunner.stop();
+      taskStore.save();
+      console.log(`[disconnect] client=${clientId} stopped, cancelled=${cancelled} tasks`);
+      return send(res, 200, { ok: true, cancelled, stopped: true });
+    }
+
     if (req.method === "POST" && pathname === "/auto/scan") {
       return send(res, 200, signalRunner.scan({ force: true }));
     }

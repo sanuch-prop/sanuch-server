@@ -32,6 +32,18 @@ class TaskStore {
     task.status = input.status || "ACKED"; task.ackedAt = nowIso(); task.ack = { clientId:input.clientId || null, status:task.status, message:input.message || "", requestId:input.requestId || task.requestId, socketResponse:input.socketResponse || null, time:nowIso() };
     this.addEvent("TASK_ACKED", `${task.id} => ${task.status}`, {taskId:task.id, status:task.status}); return { ok:true, task };
   }
+  cancelByClient(clientId) {
+    let count = 0;
+    for (const task of this.tasks) {
+      if (!["CREATED","DELIVERED"].includes(task.status)) continue;
+      if (task.clientId !== clientId && task.clientId !== "all") continue;
+      task.status = "CANCELLED";
+      task.cancelledAt = nowIso();
+      this.addEvent("TASK_CANCELLED", `${task.id} cancelled (client disconnect)`, { taskId: task.id, clientId });
+      count++;
+    }
+    return count;
+  }
   list({limit=100}={}) { return this.tasks.slice(-Number(limit||100)).reverse(); }
   save() { storage.writeJson("tasks.json", this.tasks); storage.writeJson("task-events.json", this.events); }
   state() { const byStatus = {}; for (const t of this.tasks) byStatus[t.status] = (byStatus[t.status] || 0) + 1; return { total:this.tasks.length, byStatus, last:this.tasks[this.tasks.length-1] || null }; }
