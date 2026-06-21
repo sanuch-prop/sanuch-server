@@ -20,7 +20,8 @@ const REASON_RU = {
   STEP1_SIGNAL:           "Шаг 1/3: сигнал найден, ждём подтверждение.",
   STEP3_OPEN:             "Шаг 3/3: открытие сделки!",
   TRADE_ALREADY_OPEN:     "Блок: по этой паре уже есть открытая сделка.",
-  TASK_PENDING:           "Блок: задача по этой паре ещё ожидает исполнения."
+  TASK_PENDING:           "Блок: задача по этой паре ещё ожидает исполнения.",
+  MAX_OPEN_TRADES:        "Блок: достигнут лимит одновременно открытых сделок."
 };
 
 class SignalRunner {
@@ -121,7 +122,7 @@ class SignalRunner {
       "subscribeAllAssets", "timeframe", "fast", "slow", "amount",
       "expirySec", "minScore", "minAgree", "aggregation", "indicators",
       "cooldownMs", "source", "usePayoutFilter", "minPayoutPercent",
-      "useConfirmRule",
+      "useConfirmRule", "maxOpenTrades",
       "martingaleEnabled", "martingaleMultiplier", "martingaleSteps", "martingaleReset"
     ];
 
@@ -262,6 +263,46 @@ class SignalRunner {
             ? `${REASON_RU.TRADE_ALREADY_OPEN} (${symbol})`
             : `${REASON_RU.TASK_PENDING} (${symbol})`;
           skip(symbol, reason, msg);
+          continue;
+        }
+      }
+
+      // --- Блок: лимит одновременно открытых сделок ---
+      {
+        const openTrades = this.tradeTracker
+          ? this.tradeTracker.trades.filter(t => t.status === "OPEN")
+          : [];
+
+        // Per-indicator limit: каждый индикатор может иметь settings.maxOpenTrades
+        const contributing = (
+          signal.chosenResults?.length ? signal.chosenResults : signal.results || []
+        ).filter(i => i.side === signal.side);
+
+        let blockedBy = null;
+        for (const ind of contributing) {
+          const indMax = Number(ind.settings?.maxOpenTrades || 0);
+          if (indMax > 0) {
+            const indOpen = openTrades.filter(t =>
+              Array.isArray(t.meta?.strategy?.indicators) &&
+              t.meta.strategy.indicators.some(i => i.id === ind.id)
+            ).length;
+            if (indOpen >= indMax) {
+              blockedBy = `${ind.indicator || ind.id}: открыто ${indOpen}/${indMax}`;
+              break;
+            }
+          }
+        }
+
+        // Global strategy limit
+        if (!blockedBy) {
+          const globalMax = Number(this.config.maxOpenTrades || 0);
+          if (globalMax > 0 && openTrades.length >= globalMax) {
+            blockedBy = `открыто ${openTrades.length}/${globalMax} (глобальный лимит)`;
+          }
+        }
+
+        if (blockedBy) {
+          skip(symbol, "MAX_OPEN_TRADES", `${REASON_RU.MAX_OPEN_TRADES} ${blockedBy}`);
           continue;
         }
       }
