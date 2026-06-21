@@ -132,8 +132,17 @@ function loginByKey(key, deviceId) {
     return { ok: true, platformId: user.platformId, licenseKey: user.licenseKey, ...getStatus(user.platformId) };
   }
 
-  // Ключ привязан к другому устройству
-  return { ok: false, error: "key_bound" };
+  // Ключ привязан к другому устройству — перепривязываем (переустановка расширения)
+  user.boundDeviceId = did;
+  // Перенос platformId на новое устройство
+  if (!data[did]) {
+    data[did] = { ...data[user.platformId], platformId: did };
+  }
+  data[did].status = "active";
+  data[did].licenseKey = user.licenseKey;
+  data[did].boundDeviceId = did;
+  save(data);
+  return { ok: true, platformId: did, licenseKey: user.licenseKey, ...getStatus(did) };
 }
 
 // Сброс привязки ключа (только через admin)
