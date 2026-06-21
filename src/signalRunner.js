@@ -356,9 +356,16 @@ class SignalRunner {
       const globalMinPayout = this.config.usePayoutFilter ? Number(this.config.minPayoutPercent || 75) : 0;
       const effectiveMinPayout = Math.max(indMinPayout, globalMinPayout);
 
-      if (effectiveMinPayout > 0 && payout && Number(payout.payoutPercent) < effectiveMinPayout) {
-        skip(symbol, "LOW_PAYOUT", REASON_RU.LOW_PAYOUT + ` ${payout.payoutPercent}% < ${effectiveMinPayout}%`, { payout, signal });
-        continue;
+      if (effectiveMinPayout > 0) {
+        if (!payout) {
+          // Нет данных payout — пропускаем сделку, чтобы не открывать при неизвестном %
+          skip(symbol, "NO_PAYOUT_DATA", `Нет данных о доходности для ${symbol} (мин. ${effectiveMinPayout}%)`, { signal });
+          continue;
+        }
+        if (Number(payout.payoutPercent) < effectiveMinPayout) {
+          skip(symbol, "LOW_PAYOUT", REASON_RU.LOW_PAYOUT + ` ${payout.payoutPercent}% < ${effectiveMinPayout}%`, { payout, signal });
+          continue;
+        }
       }
 
       const latest = this.tickStore.getLatest(symbol);
