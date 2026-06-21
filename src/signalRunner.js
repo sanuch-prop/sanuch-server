@@ -348,8 +348,16 @@ class SignalRunner {
       const payoutAgeMs = rawPayout ? (Date.now() - (rawPayout.updatedAtMs || 0)) : Infinity;
       const payout = payoutAgeMs < 2 * 60 * 60 * 1000 ? rawPayout : null;
 
-      if (this.config.usePayoutFilter && payout && Number(payout.payoutPercent) < Number(this.config.minPayoutPercent || 75)) {
-        skip(symbol, "LOW_PAYOUT", REASON_RU.LOW_PAYOUT + ` ${payout.payoutPercent}% < ${this.config.minPayoutPercent}%`, { payout, signal });
+      // Effective min payout: max of global setting and min of per-indicator settings
+      const indPayouts = (this.config.indicators || [])
+        .map(ind => Number(ind?.settings?.minPayoutPercent || 0))
+        .filter(v => v > 0);
+      const indMinPayout = indPayouts.length ? Math.min(...indPayouts) : 0;
+      const globalMinPayout = this.config.usePayoutFilter ? Number(this.config.minPayoutPercent || 75) : 0;
+      const effectiveMinPayout = Math.max(indMinPayout, globalMinPayout);
+
+      if (effectiveMinPayout > 0 && payout && Number(payout.payoutPercent) < effectiveMinPayout) {
+        skip(symbol, "LOW_PAYOUT", REASON_RU.LOW_PAYOUT + ` ${payout.payoutPercent}% < ${effectiveMinPayout}%`, { payout, signal });
         continue;
       }
 
