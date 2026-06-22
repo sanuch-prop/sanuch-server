@@ -591,9 +591,9 @@ async function handle(req, res) {
     }
 
     // Emergency stop: called on account switch (Demo↔Real).
-    // Stops signalRunner + cancels ALL pending tasks regardless of clientId.
+    // Clears entire session: disables all indicators, stops runner, cancels all tasks.
     if (req.method === "POST" && pathname === "/auto/emergencyStop") {
-      signalRunner.stop();
+      signalRunner.clearSession();
       let cancelled = 0;
       for (const task of taskStore.tasks) {
         if (["CREATED", "DELIVERED"].includes(task.status)) {
@@ -603,7 +603,7 @@ async function handle(req, res) {
         }
       }
       if (cancelled > 0) taskStore.save();
-      console.log(`[emergencyStop] cancelled=${cancelled} tasks`);
+      console.log(`[emergencyStop] session cleared, cancelled=${cancelled} tasks`);
       return send(res, 200, { ok: true, cancelled, stopped: true });
     }
 

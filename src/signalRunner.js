@@ -167,6 +167,20 @@ class SignalRunner {
     return this.status();
   }
 
+  // Full session reset: stops auto, disables ALL indicators, clears pending state.
+  // Called on account switch (Demo↔Real) so the next session starts clean.
+  clearSession() {
+    this.config.enabled = false;
+    if (Array.isArray(this.config.indicators)) {
+      this.config.indicators = this.config.indicators.map(i => ({ ...i, enabled: false }));
+    }
+    this.pendingConfirm = {};
+    this.lastCreatedAtByKey = {};
+    this._logEvent("info", null, "Сессия сброшена: все индикаторы отключены.");
+    this.save();
+    return this.status();
+  }
+
   getSymbols() {
     let syms;
     const list = Array.isArray(this.config.watchlist) ? this.config.watchlist.filter(Boolean) : [];
