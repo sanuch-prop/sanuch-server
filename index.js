@@ -590,6 +590,23 @@ async function handle(req, res) {
       return send(res, 200, { ok: true, cancelled, stopped: true });
     }
 
+    // Emergency stop: called on account switch (Demo↔Real).
+    // Stops signalRunner + cancels ALL pending tasks regardless of clientId.
+    if (req.method === "POST" && pathname === "/auto/emergencyStop") {
+      signalRunner.stop();
+      let cancelled = 0;
+      for (const task of taskStore.tasks) {
+        if (["CREATED", "DELIVERED"].includes(task.status)) {
+          task.status = "CANCELLED";
+          task.cancelledAt = nowIso();
+          cancelled++;
+        }
+      }
+      if (cancelled > 0) taskStore.save();
+      console.log(`[emergencyStop] cancelled=${cancelled} tasks`);
+      return send(res, 200, { ok: true, cancelled, stopped: true });
+    }
+
     if (req.method === "POST" && pathname === "/auto/scan") {
       return send(res, 200, signalRunner.scan({ force: true }));
     }

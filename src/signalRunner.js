@@ -274,31 +274,37 @@ class SignalRunner {
           ? this.tradeTracker.trades.filter(t => t.status === "OPEN")
           : [];
 
-        // Include tasks that are queued but not yet executed (CREATED or DELIVERED).
-        // Critical: without this, the check fires before ACK and allows N×limit trades.
+        // CRITICAL: re-read pending tasks inside the loop so tasks created for earlier
+        // symbols in this same scan are visible — prevents N×limit flooding.
         const pendingTasks = this.taskStore
           ? this.taskStore.tasks.filter(t => ["CREATED", "DELIVERED"].includes(t.status))
           : [];
 
-        // Per-indicator limit: каждый индикатор может иметь settings.maxOpenTrades
+        // Per-indicator limit: read settings from stored config (signal results lack settings)
+        const indConfigMap = new Map(
+          (this.config.indicators || []).map(c => [String(c.id || "").toLowerCase(), c])
+        );
+
         const contributing = (
           signal.chosenResults?.length ? signal.chosenResults : signal.results || []
         ).filter(i => i.side === signal.side);
 
         let blockedBy = null;
         for (const ind of contributing) {
-          const indMax = Number(ind.settings?.maxOpenTrades || 0);
+          const indConf = indConfigMap.get(String(ind.id || "").toLowerCase()) || {};
+          const indMax = Number(indConf.settings?.maxOpenTrades || ind.settings?.maxOpenTrades || 0);
           if (indMax > 0) {
+            const indId = ind.id;
             const indOpen = openTrades.filter(t =>
               Array.isArray(t.meta?.strategy?.indicators) &&
-              t.meta.strategy.indicators.some(i => i.id === ind.id)
+              t.meta.strategy.indicators.some(i => i.id === indId)
             ).length;
             const indPending = pendingTasks.filter(t =>
               Array.isArray(t.meta?.strategy?.indicators) &&
-              t.meta.strategy.indicators.some(i => i.id === ind.id)
+              t.meta.strategy.indicators.some(i => i.id === indId)
             ).length;
             if (indOpen + indPending >= indMax) {
-              blockedBy = `${ind.indicator || ind.id}: ${indOpen} открыто + ${indPending} в очереди = ${indOpen + indPending}/${indMax}`;
+              blockedBy = `${ind.indicator || ind.id}: ${indOpen}+${indPending}/${indMax}`;
               break;
             }
           }
@@ -309,7 +315,7 @@ class SignalRunner {
           const globalMax = Number(this.config.maxOpenTrades || 0);
           const totalInFlight = openTrades.length + pendingTasks.length;
           if (globalMax > 0 && totalInFlight >= globalMax) {
-            blockedBy = `${openTrades.length} открыто + ${pendingTasks.length} в очереди = ${totalInFlight}/${globalMax} (лимит)`;
+            blockedBy = `${openTrades.length}+${pendingTasks.length}/${globalMax} (глоб.)`;
           }
         }
 
