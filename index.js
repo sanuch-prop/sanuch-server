@@ -576,7 +576,18 @@ async function handle(req, res) {
     }
 
     if (req.method === "POST" && pathname === "/auto/stop") {
-      return send(res, 200, signalRunner.stop());
+      const stopped = signalRunner.stop();
+      // Cancel queued tasks so they don't execute after the user stops auto-trading.
+      let cancelled = 0;
+      for (const task of taskStore.tasks) {
+        if (task.status === "CREATED") {
+          task.status = "CANCELLED";
+          task.cancelledAt = new Date().toISOString();
+          cancelled++;
+        }
+      }
+      if (cancelled > 0) taskStore.save();
+      return send(res, 200, { ...stopped, cancelledTasks: cancelled });
     }
 
     if (req.method === "POST" && pathname === "/client/disconnect") {
@@ -677,10 +688,11 @@ async function handle(req, res) {
     if (req.method === "GET" && pathname === "/tasks/poll") {
       const q = getQuery(req);
       const clientId = q.clientId || req.headers["x-sanuch-client-id"] || "default-client";
+      const accountMode = q.accountMode || null; // "DEMO" or "REAL" — prevents cross-account task delivery
       return send(res, 200, {
         ok: true,
         clientId,
-        tasks: taskStore.poll(clientId, Number(q.limit || CONFIG.tasks.pollLimit))
+        tasks: taskStore.poll(clientId, Number(q.limit || CONFIG.tasks.pollLimit), accountMode)
       });
     }
 

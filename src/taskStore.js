@@ -15,13 +15,15 @@ class TaskStore {
     const task = { id:makeId("task"), type:"OPEN_TRADE", userId:input.userId || "default-user", clientId:input.clientId || "all", accountMode:n.accountMode, isDemo:accountModeToIsDemo(n.accountMode), symbol:n.symbol, action:n.action, amount:n.amount, expirySec:n.expirySec, optionType:CONFIG.trading.optionType, requestId:makeRequestId(), source:input.source || "MANUAL", signalId:input.signalId || null, signalPrice:input.signalPrice ?? null, reason:input.reason || "", meta:input.meta || {}, status:"CREATED", idemKey, createdAt:nowIso(), createdAtMs:now, expiresAtMs:now + (input.ttlMs || CONFIG.tasks.ttlMs), deliveredAt:null, ackedAt:null, ack:null };
     this.tasks.push(task); this.addEvent("TASK_CREATED", `${task.accountMode} ${task.action} ${task.symbol} ${task.expirySec}s`, { taskId:task.id }); return { ok:true, task };
   }
-  poll(clientId="default-client", limit=CONFIG.tasks.pollLimit) {
+  poll(clientId="default-client", limit=CONFIG.tasks.pollLimit, accountMode=null) {
     const now = Date.now(), out = [];
     for (const task of this.tasks) {
       if (out.length >= limit) break;
       if (!["CREATED","DELIVERED"].includes(task.status)) continue;
       if (task.expiresAtMs <= now) { task.status = "EXPIRED"; this.addEvent("TASK_EXPIRED", task.id, {taskId:task.id}); continue; }
       if (!(task.clientId === "all" || task.clientId === clientId)) continue;
+      // Guard: never deliver a DEMO task to a REAL client (or vice versa).
+      if (accountMode && task.accountMode && task.accountMode !== accountMode) continue;
       if (task.status === "CREATED") { task.status = "DELIVERED"; task.deliveredAt = nowIso(); task.deliveredTo = clientId; this.addEvent("TASK_DELIVERED", `${task.id} delivered to ${clientId}`, {taskId:task.id, clientId}); }
       out.push(task);
     }
