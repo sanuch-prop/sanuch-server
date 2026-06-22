@@ -590,7 +590,28 @@ async function handle(req, res) {
       return send(res, 200, { ok: true, cancelled, stopped: true });
     }
 
-    // Emergency stop: called on account switch (Demo↔Real).
+    // Called on every fresh page load. If server stored a different account mode → auto-clear session.
+    if (req.method === "POST" && pathname === "/auto/setAccountMode") {
+      const bodyText = await readBody(req);
+      const body = bodyText ? parseJsonSafe(bodyText) : {};
+      const mode = body.isDemo ? "DEMO" : "REAL";
+      const result = signalRunner.setAccountMode(mode);
+      if (result.cleared) {
+        let cancelled = 0;
+        for (const task of taskStore.tasks) {
+          if (["CREATED", "DELIVERED"].includes(task.status)) {
+            task.status = "CANCELLED";
+            task.cancelledAt = nowIso();
+            cancelled++;
+          }
+        }
+        if (cancelled > 0) taskStore.save();
+        result.cancelled = cancelled;
+      }
+      return send(res, 200, result);
+    }
+
+    // Emergency stop: called on mid-session account switch (Demo↔Real).
     // Clears entire session: disables all indicators, stops runner, cancels all tasks.
     if (req.method === "POST" && pathname === "/auto/emergencyStop") {
       signalRunner.clearSession();

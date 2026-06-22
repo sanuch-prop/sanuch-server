@@ -181,6 +181,20 @@ class SignalRunner {
     return this.status();
   }
 
+  // Called on every fresh page load with detected account mode.
+  // If mode changed from previous stored mode → clearSession automatically.
+  setAccountMode(mode) {
+    const prev = this.config.accountMode;
+    this.config.accountMode = mode;
+    if (prev && prev !== mode) {
+      this.clearSession();
+      console.log(`[setAccountMode] ${prev}→${mode}: session cleared`);
+      return { changed: true, cleared: true, mode };
+    }
+    this.save();
+    return { changed: false, cleared: false, mode };
+  }
+
   getSymbols() {
     let syms;
     const list = Array.isArray(this.config.watchlist) ? this.config.watchlist.filter(Boolean) : [];
