@@ -34,7 +34,8 @@ class SignalRunner {
 
     this.config = {
       ...CONFIG.autoSignal,
-      ...storage.readJson("auto-config.json", {})
+      ...storage.readJson("auto-config.json", {}),
+      enabled: false  // never auto-resume after server restart — user must press Start
     };
 
     this.lastScanAt = null;
@@ -273,6 +274,12 @@ class SignalRunner {
           ? this.tradeTracker.trades.filter(t => t.status === "OPEN")
           : [];
 
+        // Include tasks that are queued but not yet executed (CREATED or DELIVERED).
+        // Critical: without this, the check fires before ACK and allows N×limit trades.
+        const pendingTasks = this.taskStore
+          ? this.taskStore.tasks.filter(t => ["CREATED", "DELIVERED"].includes(t.status))
+          : [];
+
         // Per-indicator limit: каждый индикатор может иметь settings.maxOpenTrades
         const contributing = (
           signal.chosenResults?.length ? signal.chosenResults : signal.results || []
@@ -286,8 +293,12 @@ class SignalRunner {
               Array.isArray(t.meta?.strategy?.indicators) &&
               t.meta.strategy.indicators.some(i => i.id === ind.id)
             ).length;
-            if (indOpen >= indMax) {
-              blockedBy = `${ind.indicator || ind.id}: открыто ${indOpen}/${indMax}`;
+            const indPending = pendingTasks.filter(t =>
+              Array.isArray(t.meta?.strategy?.indicators) &&
+              t.meta.strategy.indicators.some(i => i.id === ind.id)
+            ).length;
+            if (indOpen + indPending >= indMax) {
+              blockedBy = `${ind.indicator || ind.id}: ${indOpen} открыто + ${indPending} в очереди = ${indOpen + indPending}/${indMax}`;
               break;
             }
           }
@@ -296,8 +307,9 @@ class SignalRunner {
         // Global strategy limit
         if (!blockedBy) {
           const globalMax = Number(this.config.maxOpenTrades || 0);
-          if (globalMax > 0 && openTrades.length >= globalMax) {
-            blockedBy = `открыто ${openTrades.length}/${globalMax} (глобальный лимит)`;
+          const totalInFlight = openTrades.length + pendingTasks.length;
+          if (globalMax > 0 && totalInFlight >= globalMax) {
+            blockedBy = `${openTrades.length} открыто + ${pendingTasks.length} в очереди = ${totalInFlight}/${globalMax} (лимит)`;
           }
         }
 

@@ -892,6 +892,24 @@ async function boot() {
     await require("./src/pgStorage").loadAll();
   }
   initStoreStates();
+
+  // Cancel tasks left over from the previous server session.
+  // They belong to a dead client connection and would fire as ghost trades on reconnect.
+  {
+    let staleCancelled = 0;
+    for (const task of taskStore.tasks) {
+      if (["CREATED", "DELIVERED"].includes(task.status)) {
+        task.status = "CANCELLED";
+        task.cancelledAt = nowIso();
+        staleCancelled++;
+      }
+    }
+    if (staleCancelled > 0) {
+      taskStore.save();
+      console.log(`[init] Cancelled ${staleCancelled} stale tasks from previous session`);
+    }
+  }
+
   server.listen(CONFIG.port, () => {
     console.log(`\n${CONFIG.appName} v${CONFIG.version}`);
     console.log(`Server: http://localhost:${CONFIG.port}`);
