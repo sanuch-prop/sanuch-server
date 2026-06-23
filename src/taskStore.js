@@ -47,7 +47,16 @@ class TaskStore {
     return count;
   }
   list({limit=100}={}) { return this.tasks.slice(-Number(limit||100)).reverse(); }
-  save() { storage.writeJson("tasks.json", this.tasks); storage.writeJson("task-events.json", this.events); }
+  prune() {
+    const cutoff = Date.now() - 24 * 60 * 60 * 1000;
+    const before = this.tasks.length;
+    this.tasks = this.tasks.filter(t =>
+      t.status === "CREATED" || t.status === "DELIVERED" || (t.createdAtMs && t.createdAtMs > cutoff)
+    );
+    if (this.tasks.length > 500) this.tasks = this.tasks.slice(-500);
+    if (this.tasks.length !== before) this.seenIdemKeys = new Set(this.tasks.map(t => t.idemKey).filter(Boolean));
+  }
+  save() { this.prune(); storage.writeJson("tasks.json", this.tasks); storage.writeJson("task-events.json", this.events); }
   state() { const byStatus = {}; for (const t of this.tasks) byStatus[t.status] = (byStatus[t.status] || 0) + 1; return { total:this.tasks.length, byStatus, last:this.tasks[this.tasks.length-1] || null }; }
 }
 module.exports = TaskStore;

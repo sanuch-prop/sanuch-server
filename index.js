@@ -864,9 +864,14 @@ async function handle(req, res) {
 }
 
 // Интервал резервного автосохранения данных
+const _USE_PG_SAVE = String(process.env.STORAGE_MODE || "file").toLowerCase() === "postgres"
+  && !!process.env.DATABASE_URL;
+// На Supabase/Railway сохраняем реже — JSON.stringify больших объектов блокирует event loop
+const _AUTOSAVE_MS = _USE_PG_SAVE ? 60000 : CONFIG.storage.autoSaveMs;
 setInterval(() => {
   try {
-    candleBuilder.save();
+    // Candles занимают 40-60MB — в Supabase не сохраняем (пересобираются из тиков)
+    if (!_USE_PG_SAVE) candleBuilder.save();
     taskStore.save();
     tradeTracker.save();
     payoutStore.save();
@@ -875,7 +880,7 @@ setInterval(() => {
   } catch (err) {
     console.warn("[autosave]", err.message);
   }
-}, CONFIG.storage.autoSaveMs);
+}, _AUTOSAVE_MS);
 
 // АРХИТЕКТУРНОЕ ИСПРАВЛЕНИЕ: Локальный сканнер переведен в режим FALLBACK.
 // Он больше не закрывает сделки секунда-в-секунду. Он ждет, например, 10 секунд после экспирации.
