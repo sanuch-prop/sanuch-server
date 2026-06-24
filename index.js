@@ -902,7 +902,8 @@ setInterval(() => {
   try {
     signalRunner.scan();
   } catch (err) {
-    console.warn("[signal runner]", err.message);
+    console.warn("[signal runner]", err.message, err.stack);
+    signalRunner._logEvent("error", "SCAN", `Crash: ${err.message} @ ${(err.stack||'').split('\n')[1]||''}`);
   }
 }, CONFIG.autoSignal?.scanMs || 1000);
 
