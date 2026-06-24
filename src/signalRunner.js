@@ -435,17 +435,16 @@ class SignalRunner {
       const payoutAgeMs = rawPayout ? (Date.now() - (rawPayout.updatedAtMs || 0)) : Infinity;
       const payout = payoutAgeMs < 2 * 60 * 60 * 1000 ? rawPayout : null;
 
-      // Effective min payout: max of global setting and min of per-indicator settings
+      // Payout filter: when usePayoutFilter=false globally, disable per-indicator checks too
       const indPayouts = (this.config.indicators || [])
         .map(ind => Number(ind?.settings?.minPayoutPercent || 0))
         .filter(v => v > 0);
-      const indMinPayout = indPayouts.length ? Math.min(...indPayouts) : 0;
+      const indMinPayout = this.config.usePayoutFilter ? (indPayouts.length ? Math.min(...indPayouts) : 0) : 0;
       const globalMinPayout = this.config.usePayoutFilter ? Number(this.config.minPayoutPercent || 75) : 0;
       const effectiveMinPayout = Math.max(indMinPayout, globalMinPayout);
 
       if (effectiveMinPayout > 0) {
         if (!payout) {
-          // Нет данных payout — пропускаем сделку, чтобы не открывать при неизвестном %
           skip(symbol, "NO_PAYOUT_DATA", `Нет данных о доходности для ${symbol} (мин. ${effectiveMinPayout}%)`, { signal });
           continue;
         }
