@@ -21,7 +21,9 @@ const REASON_RU = {
   STEP3_OPEN:             "Шаг 3/3: открытие сделки!",
   TRADE_ALREADY_OPEN:     "Блок: по этой паре уже есть открытая сделка.",
   TASK_PENDING:           "Блок: задача по этой паре ещё ожидает исполнения.",
-  MAX_OPEN_TRADES:        "Блок: достигнут лимит одновременно открытых сделок."
+  MAX_OPEN_TRADES:        "Блок: достигнут лимит одновременно открытых сделок.",
+  OUTSIDE_WORK_HOURS:     "Вне часов работы индикатора.",
+  MG_MAX_STEPS:           "Мартингейл: все шаги перекрытия исчерпаны."
 };
 
 class SignalRunner {
@@ -58,9 +60,62 @@ class SignalRunner {
   // Формула авто-расчёта: (сумма убытков + базовая ставка) / (payout / 100).
   // Работает для любого payout от 60% до 92%.
   // WIN сбрасывает цепочку. DRAW/NO_PRICE нейтральны.
+  // Check if current time (adjusted by timezoneOffsetHours) falls within "HH:MM-HH:MM" window.
+  _isWithinWorkTime(workTime, timezoneOffsetHours = 0) {
+    if (!workTime || workTime === "00:00-23:59") return true;
+    const m = String(workTime).match(/^(\d{1,2}):(\d{2})-(\d{1,2}):(\d{2})$/);
+    if (!m) return true;
+    const now = new Date();
+    const utcMin = now.getUTCHours() * 60 + now.getUTCMinutes();
+    const offsetMin = Math.round(Number(timezoneOffsetHours || 0) * 60);
+    const localMin = ((utcMin + offsetMin) % 1440 + 1440) % 1440;
+    const startMin = Number(m[1]) * 60 + Number(m[2]);
+    const endMin   = Number(m[3]) * 60 + Number(m[4]);
+    if (startMin <= endMin) return localMin >= startMin && localMin <= endMin;
+    return localMin >= startMin || localMin <= endMin; // crosses midnight
+  }
+
+  // Return total recoveries across all enabled mg steps (for maxSteps limit).
+  _getMgMaxRecoveries(iSett) {
+    const stepCount = Math.max(1, Math.min(5, Number(iSett.mgStepCount || 1)));
+    let total = 0;
+    for (let i = 1; i <= stepCount; i++) {
+      const p = `mg${i}_`;
+      if (iSett[p + 'enabled'] === 'off') continue;
+      total += Math.max(1, Number(iSett[p + 'recoveries'] !== undefined ? iSett[p + 'recoveries'] : 2));
+    }
+    return total || 1;
+  }
+
+  // Return config for the active mg step given the current consecutive loss count.
+  // Returns null if all steps are exhausted (stop martingale).
+  _getMgStepForLoss(iSett, lossCount) {
+    if (lossCount <= 0) return null;
+    const stepCount = Math.max(1, Math.min(5, Number(iSett.mgStepCount || 1)));
+    let cumulative = 0;
+    for (let i = 1; i <= stepCount; i++) {
+      const p = `mg${i}_`;
+      if (iSett[p + 'enabled'] === 'off') continue;
+      const recoveries = Math.max(1, Number(iSett[p + 'recoveries'] !== undefined ? iSett[p + 'recoveries'] : 2));
+      cumulative += recoveries;
+      if (lossCount <= cumulative) {
+        return {
+          stepNum: i,
+          expiry:             Number(iSett[p + 'expiry']              || 0) || null,
+          direction:          iSett[p + 'direction']                  || 'same',
+          autoCoef:           iSett[p + 'autoCoef']                   !== 'off',
+          minPayout:          Number(iSett[p + 'minPayout']           || 0),
+          lowPayoutAction:    iSett[p + 'lowPayoutAction']            || 'skip',
+          unavailableAction:  iSett[p + 'unavailableAction']          || 'skip'
+        };
+      }
+    }
+    return null; // all steps exhausted
+  }
+
   getMartingaleInfo(symbol, currentPayoutPercent, overrides = {}) {
     const cfg = this.config;
-    const baseAmount = Number(cfg.amount) || 1;
+    const baseAmount = overrides.baseAmount !== undefined ? Number(overrides.baseAmount) : (Number(cfg.amount) || 1);
     const isEnabled = Object.prototype.hasOwnProperty.call(overrides, 'enabled') ? overrides.enabled : !!cfg.martingaleEnabled;
     if (!isEnabled) return { amount: baseAmount, step: 0 };
 
@@ -125,7 +180,8 @@ class SignalRunner {
       "expirySec", "minScore", "minAgree", "aggregation", "indicators",
       "cooldownMs", "source", "usePayoutFilter", "minPayoutPercent",
       "useConfirmRule", "maxOpenTrades",
-      "martingaleEnabled", "martingaleMultiplier", "martingaleSteps", "martingaleReset"
+      "martingaleEnabled", "martingaleMultiplier", "martingaleSteps", "martingaleReset",
+      "timezoneOffsetHours"
     ];
 
     for (const key of allowed) {
@@ -465,28 +521,89 @@ class SignalRunner {
         continue;
       }
 
-      // Per-indicator martingale: mg1_ prefix keys (saved from indicator's Мартингейл tab)
+      // Per-indicator settings (from indicator's Регламент + Мартингейл tabs)
       const chosenInd = signal.chosenResults?.[0] || signal.results?.[0] || null;
       const iSett = chosenInd?.settings || {};
-      const hasIndMg = iSett['mg1_enabled'] !== undefined || iSett['mg1_recoveries'] !== undefined;
+
+      // Регламент: trading hours check
+      const iWorkTime = iSett.workTime;
+      if (iWorkTime && iWorkTime !== "00:00-23:59") {
+        const tzOffset = Number(this.config.timezoneOffsetHours || 0);
+        if (!this._isWithinWorkTime(iWorkTime, tzOffset)) {
+          skip(symbol, "OUTSIDE_WORK_HOURS", REASON_RU.OUTSIDE_WORK_HOURS + ` (${iWorkTime}, UTC${tzOffset >= 0 ? "+" : ""}${tzOffset})`);
+          continue;
+        }
+      }
+
+      // Регламент: per-indicator trade amount (overrides global)
+      const baseAmount = Number(iSett.amount || this.config.amount) || 1;
+
+      // Регламент: per-indicator max simultaneous open trades
+      const indMaxOpen = Number(iSett.maxOpenTrades || 0);
+      if (indMaxOpen > 0 && this.tradeTracker && chosenInd?.id) {
+        const indId = chosenInd.id;
+        const openCount = this.tradeTracker.trades.filter(t =>
+          t.status === "OPEN" &&
+          t.meta?.strategy?.indicators?.some(i => i.id === indId)
+        ).length;
+        if (openCount >= indMaxOpen) {
+          skip(symbol, "MAX_OPEN_TRADES", REASON_RU.MAX_OPEN_TRADES + ` (${openCount}/${indMaxOpen})`);
+          continue;
+        }
+      }
+
+      // Мартингейл: per-indicator multi-step martingale (mg1_ … mg5_ keys)
+      const hasIndMg = iSett['mg1_enabled'] !== undefined || iSett['mg1_recoveries'] !== undefined || iSett.mgStepCount !== undefined;
       const indMgEnabled = hasIndMg ? (iSett['mg1_enabled'] !== 'off') : null;
-      const indMgSteps   = hasIndMg ? Math.max(1, Number(iSett['mg1_recoveries'] || 2)) : null;
-      const indMgExpiry  = hasIndMg && Number(iSett['mg1_expiry']) > 0 ? Number(iSett['mg1_expiry']) : null;
-
       const mgEnabled  = indMgEnabled !== null ? indMgEnabled : !!this.config.martingaleEnabled;
-      const baseAmount = Number(this.config.amount) || 1;
       const payoutPct  = payout?.payoutPercent || null;
-      const mgInfo     = this.getMartingaleInfo(symbol, payoutPct, { enabled: mgEnabled, maxSteps: indMgSteps });
-      const tradeAmount = Number(signal.amount || mgInfo.amount);
-      const mgStep     = mgInfo.step;
 
-      // Регламент: use indicator's mg1_expiry for martingale recovery trades, else normal expiry
-      const tradeExpirySec = mgEnabled && mgStep > 0 && indMgExpiry
-        ? indMgExpiry
+      let mgInfo = { amount: baseAmount, step: 0 };
+      let activeMgStep = null;
+
+      if (mgEnabled) {
+        const maxRecoveries = hasIndMg
+          ? this._getMgMaxRecoveries(iSett)
+          : (Number(this.config.martingaleSteps) || 3);
+        mgInfo = this.getMartingaleInfo(symbol, payoutPct, { enabled: true, maxSteps: maxRecoveries, baseAmount });
+
+        if (mgInfo.step > 0 && hasIndMg) {
+          activeMgStep = this._getMgStepForLoss(iSett, mgInfo.step);
+          if (!activeMgStep) {
+            skip(symbol, "MG_MAX_STEPS", REASON_RU.MG_MAX_STEPS);
+            continue;
+          }
+          // Per-step payout threshold check
+          if (activeMgStep.minPayout > 0 && payout && Number(payout.payoutPercent) < activeMgStep.minPayout) {
+            if (activeMgStep.lowPayoutAction === 'stop') {
+              this.config.enabled = false;
+              this.save();
+              this._logEvent("info", symbol, `Мартингейл шаг ${activeMgStep.stepNum}: выплата ${payout.payoutPercent}% < ${activeMgStep.minPayout}% — стратегия остановлена.`);
+              break;
+            }
+            // 'skip' or 'new_asset' → skip this symbol
+            skip(symbol, "LOW_PAYOUT", `Мартингейл шаг ${activeMgStep.stepNum}: выплата ${payout.payoutPercent}% < мин. ${activeMgStep.minPayout}%`);
+            continue;
+          }
+        }
+      }
+
+      const tradeAmount = Number(signal.amount || mgInfo.amount);
+      const mgStep = mgInfo.step;
+
+      // Per-step expiry for recovery trades; else normal signal expiry
+      const stepExpiry = activeMgStep?.expiry || null;
+      const tradeExpirySec = mgStep > 0 && stepExpiry
+        ? stepExpiry
         : Number(signal.expirySec || this.config.expirySec);
 
+      // Per-step direction (reverse signal on deep losses if configured)
+      const tradeAction = mgStep > 0 && activeMgStep?.direction === 'reverse'
+        ? (signal.action === 'call' ? 'put' : 'call')
+        : signal.action;
+
       if (mgEnabled && mgStep > 0) {
-        this._logEvent("info", symbol, `Мартингейл шаг ${mgStep}: ставка $${tradeAmount} (база $${baseAmount}${payoutPct ? `, выплата ${payoutPct}%` : ""})`);
+        this._logEvent("info", symbol, `Мартингейл шаг ${mgStep}${activeMgStep ? ` (уровень ${activeMgStep.stepNum})` : ""}: ставка $${tradeAmount} (база $${baseAmount}${payoutPct ? `, выплата ${payoutPct}%` : ""})`);
       }
 
       const taskResult = this.taskStore.createOpenTradeTask({
@@ -494,7 +611,7 @@ class SignalRunner {
         clientId: this.config.clientId,
         accountMode: this.config.accountMode,
         symbol,
-        action: signal.action,
+        action: tradeAction,
         amount: tradeAmount,
         expirySec: tradeExpirySec,
         source: this.config.source,
@@ -525,7 +642,7 @@ class SignalRunner {
         this.lastCreatedAtByKey[signalKey] = Date.now();
         this.createdTotal += 1;
         created.push(taskResult.task);
-        this._logEvent("trade", symbol, `Задача создана: ${signal.action} ${symbol} $${tradeAmount} ${tradeExpirySec}с`, { taskId: taskResult.task.id });
+        this._logEvent("trade", symbol, `Задача создана: ${tradeAction} ${symbol} $${tradeAmount} ${tradeExpirySec}с`, { taskId: taskResult.task.id });
       } else if (taskResult.error === "DUPLICATE_TASK") {
         this.duplicateTotal += 1;
         skipped.push({ symbol, reason: "DUPLICATE_TASK", message: REASON_RU.DUPLICATE_TASK });
