@@ -608,6 +608,7 @@ class SignalRunner {
         this._logEvent("info", symbol, `Мартингейл шаг ${mgStep}${activeMgStep ? ` (уровень ${activeMgStep.stepNum})` : ""}: ставка $${tradeAmount} (база $${baseAmount}${payoutPct ? `, выплата ${payoutPct}%` : ""})`);
       }
 
+      this._logEvent("info", symbol, `[DBG] pre-create: acct=${this.config.accountMode} action=${tradeAction} amt=${tradeAmount} exp=${tradeExpirySec} taskStore=${!!this.taskStore}`);
       const taskResult = this.taskStore.createOpenTradeTask({
         userId: this.config.userId,
         clientId: this.config.clientId,
