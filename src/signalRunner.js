@@ -465,10 +465,13 @@ class SignalRunner {
           // Шаг 3 — открытие сделки
           delete this.pendingConfirm[confirmKey];
           this._logEvent("trade", symbol, REASON_RU.STEP3_OPEN + ` ${signal.action}`);
+          this._logEvent("info", symbol, "[DBG-A] after step3 log — about to exit useConfirm block");
           // Продолжаем ниже — создаём задачу
         }
+        this._logEvent("info", symbol, "[DBG-B] end of useConfirm block — step=" + (this.pendingConfirm[`${symbol}|${signal.timeframe||this.config.timeframe}|${signal.action}`]?.step ?? "deleted"));
       }
       // --- Конец правила 3 свечей ---
+      this._logEvent("info", symbol, "[DBG-C] past useConfirm — reaching cooldown check");
 
       const lastCandle = signal.lastCandle;
       const signalKey = [
