@@ -200,7 +200,8 @@ async function handle(req, res) {
         version: CONFIG.version,
         status: "running",
         time: nowIso(),
-        port: CONFIG.port
+        port: CONFIG.port,
+        buildTag: "DBG-a9f07d6"
       });
     }
 
