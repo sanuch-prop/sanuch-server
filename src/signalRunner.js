@@ -492,11 +492,12 @@ class SignalRunner {
       const payoutAgeMs = rawPayout ? (Date.now() - (rawPayout.updatedAtMs || 0)) : Infinity;
       const payout = payoutAgeMs < 2 * 60 * 60 * 1000 ? rawPayout : null;
 
-      // Payout filter: when usePayoutFilter=false globally, disable per-indicator checks too
+      // Payout filter: per-indicator minPayoutPercent always applies (independent of global usePayoutFilter)
+      // Global usePayoutFilter only controls the global minPayoutPercent threshold
       const indPayouts = (this.config.indicators || [])
         .map(ind => Number(ind?.settings?.minPayoutPercent || 0))
         .filter(v => v > 0);
-      const indMinPayout = this.config.usePayoutFilter ? (indPayouts.length ? Math.min(...indPayouts) : 0) : 0;
+      const indMinPayout = indPayouts.length ? Math.min(...indPayouts) : 0;
       const globalMinPayout = this.config.usePayoutFilter ? Number(this.config.minPayoutPercent || 75) : 0;
       const effectiveMinPayout = Math.max(indMinPayout, globalMinPayout);
 
@@ -522,8 +523,10 @@ class SignalRunner {
       }
 
       // Per-indicator settings (from indicator's Регламент + Мартингейл tabs)
+      // Signal results do NOT carry full settings — must read from stored config map (see line ~368)
       const chosenInd = signal.chosenResults?.[0] || signal.results?.[0] || null;
-      const iSett = chosenInd?.settings || {};
+      const indConf = chosenInd ? (indConfigMap.get(String(chosenInd.id || "").toLowerCase()) || {}) : {};
+      const iSett = indConf.settings || chosenInd?.settings || {};
 
       // Регламент: trading hours check
       const iWorkTime = iSett.workTime;
