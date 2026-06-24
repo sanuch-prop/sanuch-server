@@ -353,6 +353,11 @@ class SignalRunner {
         }
       }
 
+      // Build indicator config map once per symbol — used for maxOpenTrades check AND iSett below
+      const indConfigMap = new Map(
+        (this.config.indicators || []).map(c => [String(c.id || "").toLowerCase(), c])
+      );
+
       // --- Блок: лимит одновременно открытых сделок ---
       {
         const openTrades = this.tradeTracker
@@ -364,11 +369,6 @@ class SignalRunner {
         const pendingTasks = this.taskStore
           ? this.taskStore.tasks.filter(t => ["CREATED", "DELIVERED"].includes(t.status))
           : [];
-
-        // Per-indicator limit: read settings from stored config (signal results lack settings)
-        const indConfigMap = new Map(
-          (this.config.indicators || []).map(c => [String(c.id || "").toLowerCase(), c])
-        );
 
         const contributing = (
           signal.chosenResults?.length ? signal.chosenResults : signal.results || []
