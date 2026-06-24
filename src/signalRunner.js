@@ -464,7 +464,7 @@ class SignalRunner {
           }
           // Шаг 3 — открытие сделки
           delete this.pendingConfirm[confirmKey];
-          this._logEvent("trade", symbol, REASON_RU.STEP3_OPEN + ` ${signal.action} $${this.config.amount}`);
+          this._logEvent("trade", symbol, REASON_RU.STEP3_OPEN + ` ${signal.action}`);
           // Продолжаем ниже — создаём задачу
         }
       }
@@ -515,11 +515,10 @@ class SignalRunner {
       const latest = this.tickStore.getLatest(symbol);
       const signalPrice = latest?.price ?? lastCandle?.close ?? null;
 
-      // Не открывать сделку если нет свежих котировок (тик старше 30 секунд)
+      // Warn if tick is stale but do not block — signalPrice falls back to last candle close
       const tickAgeSec = latest ? (Date.now() / 1000 - Number(latest.serverTime || 0)) : Infinity;
-      if (!latest || tickAgeSec > 30) {
-        skip(symbol, "STALE_TICK", `Нет свежих котировок: ${tickAgeSec.toFixed(1)}с`, { tickAgeSec });
-        continue;
+      if (tickAgeSec > 300) {
+        this._logEvent("info", symbol, `Котировки устарели (${tickAgeSec === Infinity ? "нет данных" : tickAgeSec.toFixed(0) + "с"}), используем цену свечи.`);
       }
 
       // Per-indicator settings (from indicator's Регламент + Мартингейл tabs)
