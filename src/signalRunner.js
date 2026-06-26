@@ -715,6 +715,14 @@ class SignalRunner {
     const s2 = r2.ready && r2.action;
     const s3 = r3 ? (r3.ready && r3.action) : false;
 
+    // Debug log every ~30 scans to show signal state without flooding logs
+    if (!this._comboDebugCount) this._comboDebugCount = {};
+    const dbgKey = `${combo.id}|${symbol}`;
+    this._comboDebugCount[dbgKey] = ((this._comboDebugCount[dbgKey] || 0) + 1) % 30;
+    if (this._comboDebugCount[dbgKey] === 1) {
+      this._logEvent("info", symbol, `${label} сигналы: ind1=${s1||'—'} ind2=${s2||'—'}${r3 ? ' ind3=' + (s3||'—') : ''} [cond:${combo.condition}]`);
+    }
+
     let openAction = null;
     let openExpiry = Number(combo.ind1?.expirySec || combo.ind2?.expirySec || this.config.expirySec || 15);
 
