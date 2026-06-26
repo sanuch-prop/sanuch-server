@@ -1,6 +1,6 @@
 const CONFIG = require("./config");
 const storage = require("./storage");
-const { analyzeStrategy } = require("./signalEngine");
+const { analyzeStrategy, analyzeIndicator } = require("./signalEngine");
 const { normalizeSymbol, nowIso } = require("./utils");
 const { allAssetSymbols } = require("./assetUniverse");
 
@@ -51,6 +51,10 @@ class SignalRunner {
 
     // 3-candle confirmation state: { confirmKey → { step, action, candleOpenTime, signal, seenAt } }
     this.pendingConfirm = {};
+
+    // Combo state: Map<"comboId|symbol" → { step, action, seenAt }>
+    this.combos = [];
+    this.comboStates = new Map();
 
     // Event log (max 120 entries, shown in UI)
     this.eventLog = [];
@@ -181,7 +185,7 @@ class SignalRunner {
       "cooldownMs", "source", "usePayoutFilter", "minPayoutPercent",
       "useConfirmRule", "maxOpenTrades",
       "martingaleEnabled", "martingaleMultiplier", "martingaleSteps", "martingaleReset",
-      "timezoneOffsetHours"
+      "timezoneOffsetHours", "combos"
     ];
 
     for (const key of allowed) {
@@ -206,6 +210,10 @@ class SignalRunner {
       this.config.watchlist = this.config.watchlist.map(s => normalizeSymbol(s)).filter(Boolean);
     }
 
+    if (Array.isArray(this.config.combos)) {
+      this.combos = this.config.combos.filter(c => c && c.id && c.condition);
+    }
+
     this.save();
     return this.status();
   }
@@ -219,6 +227,7 @@ class SignalRunner {
   stop() {
     this.config.enabled = false;
     this.pendingConfirm = {};
+    this.comboStates.clear();
     this._logEvent("info", null, "Авто-режим остановлен. Ожидания сброшены.");
     this.save();
     return this.status();
@@ -659,7 +668,303 @@ class SignalRunner {
       }
     }
 
+    // --- Combo scan (runs independently from main strategy) ---
+    if (this.combos.length) {
+      const now = Date.now();
+      for (const symbol of symbols) {
+        const gc = (tf, limit = 260) => this.candleBuilder.getCandles(symbol, tf || this.config.timeframe, limit, true);
+        for (const combo of this.combos) {
+          this._processCombo(combo, symbol, gc, now);
+        }
+      }
+    }
+
     return { ok: true, enabled: this.config.enabled, scanned: symbols.length, created, skipped };
+  }
+
+  // ─── COMBO ENGINE ──────────────────────────────────────────────────────────
+
+  _analyzeComboSlot(slot, symbol, getCandles) {
+    if (!slot || !slot.id) return { side: "WAIT", ready: false, action: null };
+    try {
+      const tf = slot.timeframe || this.config.timeframe || "S5";
+      const candles = getCandles(tf, 260);
+      return analyzeIndicator(candles, slot, { symbol, timeframe: tf, expirySec: slot.expirySec || this.config.expirySec || 15 });
+    } catch (_) {
+      return { side: "WAIT", ready: false, action: null };
+    }
+  }
+
+  _processCombo(combo, symbol, getCandles, now) {
+    const stateKey = `${combo.id}|${symbol}`;
+    const state = this.comboStates.get(stateKey) || null;
+    const TIMEOUT_5MIN = 5 * 60 * 1000;
+    const label = `[Combo ${combo.name || combo.id}]`;
+
+    // Clean stale state for this key
+    if (state && (now - state.seenAt) > 10 * 60 * 1000) {
+      this.comboStates.delete(stateKey);
+      return;
+    }
+
+    const r1 = this._analyzeComboSlot(combo.ind1, symbol, getCandles);
+    const r2 = this._analyzeComboSlot(combo.ind2, symbol, getCandles);
+    const r3 = combo.ind3 ? this._analyzeComboSlot(combo.ind3, symbol, getCandles) : null;
+
+    const s1 = r1.ready && r1.action;
+    const s2 = r2.ready && r2.action;
+    const s3 = r3 ? (r3.ready && r3.action) : false;
+
+    let openAction = null;
+    let openExpiry = Number(combo.ind1?.expirySec || combo.ind2?.expirySec || this.config.expirySec || 15);
+
+    switch (combo.condition) {
+
+      case "any_first":
+        if (s1) { openAction = r1.action; openExpiry = combo.ind1?.expirySec || openExpiry; }
+        else if (s2) { openAction = r2.action; openExpiry = combo.ind2?.expirySec || openExpiry; }
+        else if (s3) { openAction = r3.action; openExpiry = combo.ind3?.expirySec || openExpiry; }
+        break;
+
+      case "seq_2":
+      case "seq_2_timer": {
+        const timerOn = combo.condition === "seq_2_timer";
+        if (!state) {
+          if (s1) {
+            this.comboStates.set(stateKey, { step: 1, action: r1.action, seenAt: now });
+            this._logEvent("info", symbol, `${label} Шаг 1/2: ${r1.action.toUpperCase()}, ждём ${combo.ind2?.id}`);
+          }
+        } else {
+          if (timerOn && (now - state.seenAt) > TIMEOUT_5MIN) {
+            this.comboStates.delete(stateKey);
+            this._logEvent("info", symbol, `${label} Таймаут 5 мин — сброс`);
+          } else if (s2 && r2.action === state.action) {
+            openAction = state.action;
+            openExpiry = combo.ind2?.expirySec || openExpiry;
+            this.comboStates.delete(stateKey);
+          } else if (s1 && r1.action !== state.action) {
+            this.comboStates.delete(stateKey);
+            this._logEvent("info", symbol, `${label} Сброс: направление изменилось`);
+          }
+        }
+        break;
+      }
+
+      case "both_in_window": {
+        const WINDOW_1MIN = 60 * 1000;
+        if (!state) {
+          if (s1) {
+            this.comboStates.set(stateKey, { step: 1, action: r1.action, seen: { ind1: true }, seenAt: now });
+          } else if (s2) {
+            this.comboStates.set(stateKey, { step: 1, action: r2.action, seen: { ind2: true }, seenAt: now });
+          }
+        } else {
+          if ((now - state.seenAt) > WINDOW_1MIN) {
+            this.comboStates.delete(stateKey);
+          } else {
+            const seen = { ...state.seen };
+            if (s1 && r1.action === state.action) seen.ind1 = true;
+            if (s2 && r2.action === state.action) seen.ind2 = true;
+            if (seen.ind1 && seen.ind2) {
+              openAction = state.action;
+              // expiry = whichever indicator just completed the pair
+              const justFired1 = !state.seen.ind1 && seen.ind1;
+              const justFired2 = !state.seen.ind2 && seen.ind2;
+              openExpiry = justFired2 ? (combo.ind2?.expirySec || openExpiry)
+                         : justFired1 ? (combo.ind1?.expirySec || openExpiry)
+                         : openExpiry;
+              this.comboStates.delete(stateKey);
+            } else {
+              this.comboStates.set(stateKey, { ...state, seen });
+            }
+          }
+        }
+        break;
+      }
+
+      case "two_of_three": {
+        const WINDOW_1MIN = 60 * 1000;
+        const _getExpiry23 = (prevSeen, newSeen) => {
+          if (!prevSeen.ind2 && newSeen.ind2) return combo.ind2?.expirySec || openExpiry;
+          if (!prevSeen.ind3 && newSeen.ind3) return combo.ind3?.expirySec || openExpiry;
+          if (!prevSeen.ind1 && newSeen.ind1) return combo.ind1?.expirySec || openExpiry;
+          return openExpiry;
+        };
+        if (!state) {
+          const firstAction = s1 ? r1.action : s2 ? r2.action : s3 ? r3.action : null;
+          if (firstAction) {
+            const seen = { ind1: s1 && r1.action === firstAction, ind2: s2 && r2.action === firstAction, ind3: s3 && r3.action === firstAction };
+            const cnt = Object.values(seen).filter(Boolean).length;
+            if (cnt >= 2) {
+              openAction = firstAction;
+              openExpiry = _getExpiry23({}, seen);
+            } else {
+              this.comboStates.set(stateKey, { step: 1, action: firstAction, seen, seenAt: now });
+            }
+          }
+        } else {
+          if ((now - state.seenAt) > WINDOW_1MIN) {
+            this.comboStates.delete(stateKey);
+          } else {
+            const seen = { ...state.seen };
+            if (s1 && r1.action === state.action) seen.ind1 = true;
+            if (s2 && r2.action === state.action) seen.ind2 = true;
+            if (s3 && r3 && r3.action === state.action) seen.ind3 = true;
+            const cnt = Object.values(seen).filter(Boolean).length;
+            if (cnt >= 2) {
+              openAction = state.action;
+              openExpiry = _getExpiry23(state.seen, seen);
+              this.comboStates.delete(stateKey);
+            } else {
+              this.comboStates.set(stateKey, { ...state, seen });
+            }
+          }
+        }
+        break;
+      }
+
+      case "all_3": {
+        const WINDOW_1MIN = 60 * 1000;
+        const _getExpiry3 = (prevSeen, newSeen) => {
+          // expiry of the last slot that completed the triple
+          if (!prevSeen.ind3 && newSeen.ind3) return combo.ind3?.expirySec || openExpiry;
+          if (!prevSeen.ind2 && newSeen.ind2) return combo.ind2?.expirySec || openExpiry;
+          if (!prevSeen.ind1 && newSeen.ind1) return combo.ind1?.expirySec || openExpiry;
+          return openExpiry;
+        };
+        if (!state) {
+          const firstAction = s1 ? r1.action : s2 ? r2.action : s3 ? r3.action : null;
+          if (firstAction) {
+            const seen = { ind1: s1 && r1.action === firstAction, ind2: s2 && r2.action === firstAction, ind3: s3 && r3.action === firstAction };
+            if (seen.ind1 && seen.ind2 && seen.ind3) {
+              openAction = firstAction;
+              openExpiry = combo.ind3?.expirySec || openExpiry;
+            } else {
+              this.comboStates.set(stateKey, { step: 1, action: firstAction, seen, seenAt: now });
+            }
+          }
+        } else {
+          if ((now - state.seenAt) > WINDOW_1MIN) {
+            this.comboStates.delete(stateKey);
+          } else {
+            const seen = { ...state.seen };
+            if (s1 && r1.action === state.action) seen.ind1 = true;
+            if (s2 && r2.action === state.action) seen.ind2 = true;
+            if (s3 && r3 && r3.action === state.action) seen.ind3 = true;
+            if (seen.ind1 && seen.ind2 && seen.ind3) {
+              openAction = state.action;
+              openExpiry = _getExpiry3(state.seen, seen);
+              this.comboStates.delete(stateKey);
+            } else {
+              this.comboStates.set(stateKey, { ...state, seen });
+            }
+          }
+        }
+        break;
+      }
+
+      case "1_2_not_3_open":
+        // 1+2 согласны, 3 молчит → открываем
+        if (s1 && s2 && r1.action === r2.action && !s3) {
+          openAction = r1.action;
+        }
+        break;
+
+      case "1_2_not_3_wait":
+        if (!state) {
+          if (s1 && s2 && r1.action === r2.action) {
+            this.comboStates.set(stateKey, { step: 1, action: r1.action, seenAt: now });
+            this._logEvent("info", symbol, `${label} 1+2 дали ${r1.action.toUpperCase()}, ждём 3-й`);
+          }
+        } else {
+          if (s3 && r3.action === state.action) {
+            openAction = state.action;
+            openExpiry = combo.ind3?.expirySec || openExpiry;
+            this.comboStates.delete(stateKey);
+          } else if (!s1 || !s2) {
+            this.comboStates.delete(stateKey);
+          }
+        }
+        break;
+
+      case "seq_3":
+      case "seq_3_timer": {
+        const timerOn3 = combo.condition === "seq_3_timer";
+        if (!state) {
+          if (s1) {
+            this.comboStates.set(stateKey, { step: 1, action: r1.action, seenAt: now });
+            this._logEvent("info", symbol, `${label} Шаг 1/3: ${r1.action.toUpperCase()}, ждём ${combo.ind2?.id}`);
+          }
+        } else if (state.step === 1) {
+          if (timerOn3 && (now - state.seenAt) > TIMEOUT_5MIN) {
+            this.comboStates.delete(stateKey);
+            this._logEvent("info", symbol, `${label} Таймаут шаг 2/3 — сброс`);
+          } else if (s2 && r2.action === state.action) {
+            this.comboStates.set(stateKey, { step: 2, action: state.action, seenAt: now });
+            this._logEvent("info", symbol, `${label} Шаг 2/3: подтверждён, ждём ${combo.ind3?.id}`);
+          } else if (s1 && r1.action !== state.action) {
+            this.comboStates.delete(stateKey);
+          }
+        } else if (state.step === 2) {
+          if (timerOn3 && (now - state.seenAt) > TIMEOUT_5MIN) {
+            this.comboStates.delete(stateKey);
+            this._logEvent("info", symbol, `${label} Таймаут шаг 3/3 — сброс`);
+          } else if (s3 && r3.action === state.action) {
+            openAction = state.action;
+            openExpiry = combo.ind3?.expirySec || openExpiry;
+            this.comboStates.delete(stateKey);
+          } else if ((s1 && r1.action !== state.action) || (s2 && r2.action !== state.action)) {
+            this.comboStates.delete(stateKey);
+            this._logEvent("info", symbol, `${label} Сброс: конфликт направлений`);
+          }
+        }
+        break;
+      }
+    }
+
+    if (openAction) {
+      this._openComboTrade(symbol, openAction, openExpiry, combo);
+    }
+  }
+
+  _openComboTrade(symbol, action, expirySec, combo) {
+    const hasOpenTrade = this.tradeTracker?.trades.some(t => t.symbol === symbol && t.status === "OPEN");
+    const hasPendingTask = this.taskStore?.tasks.some(t => t.symbol === symbol && ["CREATED", "DELIVERED"].includes(t.status));
+    if (hasOpenTrade || hasPendingTask) return;
+
+    if (this.config.usePayoutFilter) {
+      const payout = this.payoutStore?.get(symbol);
+      if (payout && Number(payout.payoutPercent) < Number(this.config.minPayoutPercent || 75)) {
+        this._logEvent("skip", symbol, `[Combo ${combo.name || combo.id}] Payout ${payout.payoutPercent}% < мин`);
+        return;
+      }
+    }
+
+    const amount = Number(combo.amount || this.config.amount || 1);
+    const idemKey = `combo_${combo.id}_${symbol}_${action}_${Math.floor(Date.now() / 30000)}`;
+    const taskResult = this.taskStore.createOpenTradeTask({
+      userId: this.config.userId,
+      clientId: this.config.clientId,
+      accountMode: this.config.accountMode,
+      symbol, action,
+      amount,
+      expirySec: Number(expirySec),
+      source: "COMBO",
+      signalId: idemKey,
+      idemKey,
+      meta: {
+        auto: true,
+        comboId: combo.id,
+        strategy: { name: combo.name || "Связка", comboId: combo.id, condition: combo.condition }
+      }
+    });
+
+    if (taskResult.ok) {
+      this.createdTotal += 1;
+      this._logEvent("trade", symbol, `[Combo ${combo.name || combo.id}] Открытие: ${action.toUpperCase()} $${amount} ${expirySec}с`);
+    } else if (taskResult.error !== "DUPLICATE_TASK") {
+      this._logEvent("error", symbol, `[Combo ${combo.name || combo.id}] Ошибка: ${(taskResult.errors || []).join("; ")}`);
+    }
   }
 
   status() {
