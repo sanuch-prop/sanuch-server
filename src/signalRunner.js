@@ -936,14 +936,38 @@ class SignalRunner {
   }
 
   _openComboTrade(symbol, action, expirySec, combo) {
+    const label = `[Combo ${combo.name || combo.id}]`;
+
+    // 1. Working hours check
+    const tzOffset = Number(this.config.timezoneOffsetHours || 0);
+    if (combo.workTime && !this._isWithinWorkTime(combo.workTime, tzOffset)) {
+      return;
+    }
+
+    // 2. Payout filter (use combo's own minPayoutPercent)
+    const minPayout = Number(combo.minPayoutPercent || 75);
+    const payout = this.payoutStore?.get(symbol);
+    if (payout) {
+      const pct = Number(payout.payoutPercent || 0);
+      if (pct < minPayout) {
+        this._logEvent("skip", symbol, `${label} Payout ${pct}% < ${minPayout}% — пропуск`);
+        return;
+      }
+    }
+
+    // 3. Per-symbol duplicate check
     const hasOpenTrade = this.tradeTracker?.trades.some(t => t.symbol === symbol && t.status === "OPEN");
     const hasPendingTask = this.taskStore?.tasks.some(t => t.symbol === symbol && ["CREATED", "DELIVERED"].includes(t.status));
     if (hasOpenTrade || hasPendingTask) return;
 
-    if (this.config.usePayoutFilter) {
-      const payout = this.payoutStore?.get(symbol);
-      if (payout && Number(payout.payoutPercent) < Number(this.config.minPayoutPercent || 75)) {
-        this._logEvent("skip", symbol, `[Combo ${combo.name || combo.id}] Payout ${payout.payoutPercent}% < мин`);
+    // 4. Max simultaneous trades limit (re-read tasks each call so flood protection works within one scan)
+    const maxOpen = Number(combo.maxOpenTrades || 1);
+    if (maxOpen > 0) {
+      const openTrades = (this.tradeTracker?.trades || []).filter(t => t.status === "OPEN").length;
+      const pendingTasks = (this.taskStore?.tasks || []).filter(t => ["CREATED", "DELIVERED"].includes(t.status)).length;
+      const totalActive = openTrades + pendingTasks;
+      if (totalActive >= maxOpen) {
+        this._logEvent("skip", symbol, `${label} Лимит ${maxOpen} сделок (${totalActive} активных) — пропуск`);
         return;
       }
     }
