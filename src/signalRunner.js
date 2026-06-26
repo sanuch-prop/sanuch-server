@@ -972,30 +972,64 @@ class SignalRunner {
       }
     }
 
-    const amount = Number(combo.amount || this.config.amount || 1);
-    const idemKey = `combo_${combo.id}_${symbol}_${action}_${Math.floor(Date.now() / 30000)}`;
+    // 5. Martingale: use combo's own mg settings if configured
+    const iSett = combo.reglamentSettings || {};
+    const baseAmount = Number(combo.amount || this.config.amount || 1);
+    const hasMg = iSett['mg1_enabled'] !== undefined || iSett['mg1_recoveries'] !== undefined || iSett.mgStepCount !== undefined;
+    const mgEnabled = hasMg ? (iSett['mg1_enabled'] !== 'off') : false;
+
+    let tradeAmount = baseAmount;
+    let tradeExpirySec = Number(expirySec);
+    let tradeAction = action;
+    let mgStep = 0;
+
+    if (mgEnabled) {
+      const payoutPct = payout?.payoutPercent || null;
+      const maxRecoveries = this._getMgMaxRecoveries(iSett);
+      const mgInfo = this.getMartingaleInfo(symbol, payoutPct, { enabled: true, maxSteps: maxRecoveries, baseAmount });
+      mgStep = mgInfo.step;
+
+      if (mgStep > 0) {
+        const activeMgStep = this._getMgStepForLoss(iSett, mgStep);
+        if (!activeMgStep) {
+          this._logEvent("skip", symbol, `${label} Мартингейл: все шаги исчерпаны — пропуск`);
+          return;
+        }
+        if (activeMgStep.minPayout > 0 && payout && Number(payout.payoutPercent) < activeMgStep.minPayout) {
+          this._logEvent("skip", symbol, `${label} Мартингейл шаг ${activeMgStep.stepNum}: выплата < мин — пропуск`);
+          return;
+        }
+        if (activeMgStep.expiry) tradeExpirySec = activeMgStep.expiry;
+        if (activeMgStep.direction === 'reverse') tradeAction = action === 'call' ? 'put' : 'call';
+        this._logEvent("info", symbol, `${label} Мартингейл шаг ${mgStep} (ур.${activeMgStep.stepNum}): ставка $${mgInfo.amount} (база $${baseAmount})`);
+      }
+      tradeAmount = mgInfo.amount;
+    }
+
+    const idemKey = `combo_${combo.id}_${symbol}_${tradeAction}_${Math.floor(Date.now() / 30000)}`;
     const taskResult = this.taskStore.createOpenTradeTask({
       userId: this.config.userId,
       clientId: this.config.clientId,
       accountMode: this.config.accountMode,
-      symbol, action,
-      amount,
-      expirySec: Number(expirySec),
+      symbol, action: tradeAction,
+      amount: tradeAmount,
+      expirySec: tradeExpirySec,
       source: "COMBO",
       signalId: idemKey,
       idemKey,
       meta: {
         auto: true,
         comboId: combo.id,
+        martingale: mgEnabled ? { step: mgStep, baseAmount, tradeAmount } : null,
         strategy: { name: combo.name || "Связка", comboId: combo.id, condition: combo.condition }
       }
     });
 
     if (taskResult.ok) {
       this.createdTotal += 1;
-      this._logEvent("trade", symbol, `[Combo ${combo.name || combo.id}] Открытие: ${action.toUpperCase()} $${amount} ${expirySec}с`);
+      this._logEvent("trade", symbol, `${label} Открытие: ${tradeAction.toUpperCase()} $${tradeAmount} ${tradeExpirySec}с${mgStep > 0 ? ` [МГ шаг ${mgStep}]` : ""}`);
     } else if (taskResult.error !== "DUPLICATE_TASK") {
-      this._logEvent("error", symbol, `[Combo ${combo.name || combo.id}] Ошибка: ${(taskResult.errors || []).join("; ")}`);
+      this._logEvent("error", symbol, `${label} Ошибка: ${(taskResult.errors || []).join("; ")}`);
     }
   }
 
