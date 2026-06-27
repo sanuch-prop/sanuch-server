@@ -673,8 +673,8 @@ function analyzeIndicator(candlesInput, indicator = {}, options = {}) {
   else if (id === "fractals") {
     // maxAge: how many candles AFTER fractal confirmation we still allow a signal.
     // age=0 means fractal was just confirmed this candle; age=1 means 1 candle ago, etc.
-    // Default 3 — signal fires for up to 3 candles after the fractal confirmed, then goes silent.
-    const maxAge = Number(getSetting(ind, "maxAge", 3));
+    // Default 1 — signal fires only on the candle the fractal is confirmed, then immediately goes silent.
+    const maxAge = Number(getSetting(ind, "maxAge", 1));
     const idx = candles.length - 1;
     let upVal = null, downVal = null, upAge = Infinity, downAge = Infinity;
     // Search newest-first so we pick the most recent fractal within the window
