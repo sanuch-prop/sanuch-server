@@ -955,19 +955,22 @@ class SignalRunner {
       }
     }
 
-    // 3. Per-symbol duplicate check
-    const hasOpenTrade = this.tradeTracker?.trades.some(t => t.symbol === symbol && t.status === "OPEN");
-    const hasPendingTask = this.taskStore?.tasks.some(t => t.symbol === symbol && ["CREATED", "DELIVERED"].includes(t.status));
-    if (hasOpenTrade || hasPendingTask) return;
+    // 3 & 4. In-flight tracking — reliable lock from task creation until trade expires
+    // (taskStore status alone isn't reliable: ACKED tasks no longer count as pending)
+    const now = Date.now();
+    if (!this._comboInFlight) this._comboInFlight = new Map();
+    for (const [k, v] of this._comboInFlight.entries()) {
+      if (now > v.expiresAt) this._comboInFlight.delete(k);
+    }
 
-    // 4. Max simultaneous trades limit (re-read tasks each call so flood protection works within one scan)
+    const inFlightKey = `${combo.id}|${symbol}`;
+    if (this._comboInFlight.has(inFlightKey)) return;
+
     const maxOpen = Number(combo.maxOpenTrades || 1);
     if (maxOpen > 0) {
-      const openTrades = (this.tradeTracker?.trades || []).filter(t => t.status === "OPEN").length;
-      const pendingTasks = (this.taskStore?.tasks || []).filter(t => ["CREATED", "DELIVERED"].includes(t.status)).length;
-      const totalActive = openTrades + pendingTasks;
-      if (totalActive >= maxOpen) {
-        this._logEvent("skip", symbol, `${label} Лимит ${maxOpen} сделок (${totalActive} активных) — пропуск`);
+      const activeCount = [...this._comboInFlight.values()].filter(v => v.comboId === combo.id).length;
+      if (activeCount >= maxOpen) {
+        this._logEvent("skip", symbol, `${label} Лимит ${maxOpen} (${activeCount} активных) — пропуск`);
         return;
       }
     }
@@ -1026,8 +1029,11 @@ class SignalRunner {
     });
 
     if (taskResult.ok) {
+      // Lock this slot until the trade fully expires (expiry × 3 + 30s buffer)
+      const lockMs = tradeExpirySec * 3 * 1000 + 30000;
+      this._comboInFlight.set(inFlightKey, { comboId: combo.id, symbol, expiresAt: now + lockMs });
       this.createdTotal += 1;
-      this._logEvent("trade", symbol, `${label} Открытие: ${tradeAction.toUpperCase()} $${tradeAmount} ${tradeExpirySec}с${mgStep > 0 ? ` [МГ шаг ${mgStep}]` : ""}`);
+      this._logEvent("trade", symbol, `${label} Открытие: ${tradeAction.toUpperCase()} $${tradeAmount} ${tradeExpirySec}с${mgStep > 0 ? ` [МГ шаг ${mgStep}]` : ""} (блок ${Math.round(lockMs/1000)}с)`);
     } else if (taskResult.error !== "DUPLICATE_TASK") {
       this._logEvent("error", symbol, `${label} Ошибка: ${(taskResult.errors || []).join("; ")}`);
     }
