@@ -401,11 +401,17 @@ function analyzeIndicator(candlesInput, indicator = {}, options = {}) {
     else if (R < oversold && R > Rp) { side = "BUY"; score = 62; reasons.push(`RSI ниже ${oversold}, но начал расти.`); }
     else if (R > overbought && R < Rp) { side = "SELL"; score = 62; reasons.push(`RSI выше ${overbought}, но начал падать.`); }
     if (hasCustomConditions(ind)) {
-      const chosen = chooseSideByConditions(ind,
-        code => code === "A" ? R <= oversold : code === "B" ? R >= overbought : code === "C" ? R > oversold && R < overbought : false,
-        code => code === "A" ? R <= oversold : code === "B" ? R >= overbought : code === "C" ? R > oversold && R < overbought : false
-      );
-      side = chosen.side; score = side === "WAIT" ? 0 : 78; reasons.unshift(chosen.reason);
+      const check = code => {
+        if (code === "A") return Rp < 30 && R >= 30;   // crosses 30 up
+        if (code === "B") return Rp > 30 && R <= 30;   // crosses 30 down
+        if (code === "C") return Rp < 50 && R >= 50;   // crosses 50 up
+        if (code === "D") return Rp > 50 && R <= 50;   // crosses 50 down
+        if (code === "E") return Rp < 70 && R >= 70;   // crosses 70 up
+        if (code === "F") return Rp > 70 && R <= 70;   // crosses 70 down
+        return false;
+      };
+      const chosen = chooseSideByConditions(ind, check, check);
+      side = chosen.side; score = side === "WAIT" ? 0 : 80; reasons.unshift(chosen.reason);
     }
     values = { rsi: round(R), prev: round(Rp), overbought, oversold };
   }
@@ -416,6 +422,19 @@ function analyzeIndicator(candlesInput, indicator = {}, options = {}) {
     else if (Cp > 100 && C <= 100) { side = "SELL"; score = 80; reasons.push("CCI вышел из зоны выше +100 вниз."); }
     else if (C > 100) { side = "BUY"; score = 58; reasons.push("CCI выше +100: сильный покупательский импульс."); }
     else if (C < -100) { side = "SELL"; score = 58; reasons.push("CCI ниже -100: сильный продавцовский импульс."); }
+    if (hasCustomConditions(ind)) {
+      const check = code => {
+        if (code === "A") return Cp < -100 && C >= -100;  // crosses -100 up
+        if (code === "B") return Cp > -100 && C <= -100;  // crosses -100 down
+        if (code === "C") return Cp < 0 && C >= 0;        // crosses 0 up
+        if (code === "D") return Cp > 0 && C <= 0;        // crosses 0 down
+        if (code === "E") return Cp < 100 && C >= 100;    // crosses +100 up
+        if (code === "F") return Cp > 100 && C <= 100;    // crosses +100 down
+        return false;
+      };
+      const chosen = chooseSideByConditions(ind, check, check);
+      side = chosen.side; score = side === "WAIT" ? 0 : 80; reasons.unshift(chosen.reason);
+    }
     values = { cci: round(C), prev: round(Cp) };
   }
 
@@ -425,6 +444,19 @@ function analyzeIndicator(candlesInput, indicator = {}, options = {}) {
     else if (Dp > 0.7 && D <= 0.7) { side = "SELL"; score = 80; reasons.push("DeMarker вышел из зоны выше 0.7 вниз."); }
     else if (D < 0.3 && D > Dp) { side = "BUY"; score = 60; reasons.push("DeMarker в перепроданности и растёт."); }
     else if (D > 0.7 && D < Dp) { side = "SELL"; score = 60; reasons.push("DeMarker в перекупленности и падает."); }
+    if (hasCustomConditions(ind)) {
+      const check = code => {
+        if (code === "A") return Dp < 0.3 && D >= 0.3;
+        if (code === "B") return Dp > 0.3 && D <= 0.3;
+        if (code === "C") return Dp < 0.5 && D >= 0.5;
+        if (code === "D") return Dp > 0.5 && D <= 0.5;
+        if (code === "E") return Dp < 0.7 && D >= 0.7;
+        if (code === "F") return Dp > 0.7 && D <= 0.7;
+        return false;
+      };
+      const chosen = chooseSideByConditions(ind, check, check);
+      side = chosen.side; score = side === "WAIT" ? 0 : 80; reasons.unshift(chosen.reason);
+    }
     values = { demarker: round(D, 4), prev: round(Dp, 4) };
   }
 
@@ -475,6 +507,23 @@ function analyzeIndicator(candlesInput, indicator = {}, options = {}) {
     else if (crossDown(Kp, Dp, K, D) && K > 65) { side = "SELL"; score = 84; reasons.push("Stochastic пересёк вниз в верхней зоне."); }
     else if (K < 20 && K > Kp) { side = "BUY"; score = 60; reasons.push("Stochastic в перепроданности и разворачивается вверх."); }
     else if (K > 80 && K < Kp) { side = "SELL"; score = 60; reasons.push("Stochastic в перекупленности и разворачивается вниз."); }
+    if (hasCustomConditions(ind)) {
+      const check = code => {
+        if (code === "A") return crossUp(Kp, Dp, K, D) && K < 20;
+        if (code === "B") return crossDown(Kp, Dp, K, D) && K < 20;
+        if (code === "C") return crossUp(Kp, Dp, K, D) && K >= 20 && K <= 80;
+        if (code === "D") return crossDown(Kp, Dp, K, D) && K >= 20 && K <= 80;
+        if (code === "E") return crossUp(Kp, Dp, K, D) && K > 80;
+        if (code === "F") return crossDown(Kp, Dp, K, D) && K > 80;
+        if (code === "G") return Kp < 20 && K >= 20;
+        if (code === "H") return Kp < 80 && K >= 80;
+        if (code === "I") return Kp > 20 && K <= 20;
+        if (code === "J") return Kp > 80 && K <= 80;
+        return false;
+      };
+      const chosen = chooseSideByConditions(ind, check, check);
+      side = chosen.side; score = side === "WAIT" ? 0 : 84; reasons.unshift(chosen.reason);
+    }
     values = { k: round(K), d: round(D), prevK: round(Kp), prevD: round(Dp) };
   }
 
@@ -488,6 +537,19 @@ function analyzeIndicator(candlesInput, indicator = {}, options = {}) {
     const W = last(out), Wp = out[out.length - 2];
     if (Wp < -80 && W >= -80) { side = "BUY"; score = 80; reasons.push("Williams %R вышел из зоны ниже -80 вверх."); }
     else if (Wp > -20 && W <= -20) { side = "SELL"; score = 80; reasons.push("Williams %R вышел из зоны выше -20 вниз."); }
+    if (hasCustomConditions(ind)) {
+      const check = code => {
+        if (code === "A") return Wp < -80 && W >= -80;
+        if (code === "B") return Wp > -80 && W <= -80;
+        if (code === "C") return Wp < -50 && W >= -50;
+        if (code === "D") return Wp > -50 && W <= -50;
+        if (code === "E") return Wp < -20 && W >= -20;
+        if (code === "F") return Wp > -20 && W <= -20;
+        return false;
+      };
+      const chosen = chooseSideByConditions(ind, check, check);
+      side = chosen.side; score = side === "WAIT" ? 0 : 80; reasons.unshift(chosen.reason);
+    }
     values = { williamsR: round(W), prev: round(Wp) };
   }
 
@@ -509,6 +571,19 @@ function analyzeIndicator(candlesInput, indicator = {}, options = {}) {
     else if (L < T && T < J && L < Lp && T <= Tp) { side = "SELL"; score = 78; reasons.push("Lips ниже Teeth ниже Jaws: раскрытие вниз."); }
     else if (crossUp(Lp, Tp, L, T)) { side = "BUY"; score = 62; reasons.push("Lips пересекла Teeth вверх: ранний сигнал."); }
     else if (crossDown(Lp, Tp, L, T)) { side = "SELL"; score = 62; reasons.push("Lips пересекла Teeth вниз: ранний сигнал."); }
+    if (hasCustomConditions(ind)) {
+      const check = code => {
+        if (code === "A") return crossUp(Lp, Tp, L, T) && L > J && T > J;
+        if (code === "B") return crossDown(Lp, Tp, L, T) && L < J && T < J;
+        if (code === "C") return L > T && T > J && L > Lp;
+        if (code === "D") return L < T && T < J && L < Lp;
+        if (code === "E") return crossUp(Lp, Tp, L, T);
+        if (code === "F") return crossDown(Lp, Tp, L, T);
+        return false;
+      };
+      const chosen = chooseSideByConditions(ind, check, check);
+      side = chosen.side; score = side === "WAIT" ? 0 : 78; reasons.unshift(chosen.reason);
+    }
     values = { lips: round(L), teeth: round(T), jaw: round(J), prevLips: round(Lp), prevTeeth: round(Tp), prevJaw: round(Jp) };
   }
 
@@ -516,6 +591,19 @@ function analyzeIndicator(candlesInput, indicator = {}, options = {}) {
     const a = aroon(candles, period); const A = last(a), Ap = a[a.length - 2];
     if (A.up > A.down && A.up > 70) { side = "BUY"; score = crossUp(Ap.up, Ap.down, A.up, A.down) ? 84 : 66; reasons.push("Aroon Up выше Aroon Down и выше 70."); }
     else if (A.down > A.up && A.down > 70) { side = "SELL"; score = crossUp(Ap.down, Ap.up, A.down, A.up) ? 84 : 66; reasons.push("Aroon Down выше Aroon Up и выше 70."); }
+    if (hasCustomConditions(ind)) {
+      const check = code => {
+        if (code === "A") return crossUp(Ap.up, Ap.down, A.up, A.down);
+        if (code === "B") return crossDown(Ap.up, Ap.down, A.up, A.down);
+        if (code === "C") return Ap.up < 50 && A.up >= 50;
+        if (code === "D") return Ap.up > 50 && A.up <= 50;
+        if (code === "E") return Ap.down < 50 && A.down >= 50;
+        if (code === "F") return Ap.down > 50 && A.down <= 50;
+        return false;
+      };
+      const chosen = chooseSideByConditions(ind, check, check);
+      side = chosen.side; score = side === "WAIT" ? 0 : 84; reasons.unshift(chosen.reason);
+    }
     values = { up: round(A.up), down: round(A.down), prevUp: round(Ap.up), prevDown: round(Ap.down) };
   }
 
@@ -527,6 +615,20 @@ function analyzeIndicator(candlesInput, indicator = {}, options = {}) {
     const top = Math.max(spanA, spanB), bottom = Math.min(spanA, spanB);
     if (c > top && tenkan > kijun) { side = "BUY"; score = 76; reasons.push("Цена выше облака, Tenkan выше Kijun."); }
     else if (c < bottom && tenkan < kijun) { side = "SELL"; score = 76; reasons.push("Цена ниже облака, Tenkan ниже Kijun."); }
+    if (hasCustomConditions(ind)) {
+      const i2 = candles.length - 2;
+      const tenkanP = (highest(highs.slice(i2 + 1 - 9, i2 + 1)) + lowest(lows.slice(i2 + 1 - 9, i2 + 1))) / 2;
+      const kijunP = (highest(highs.slice(i2 + 1 - 26, i2 + 1)) + lowest(lows.slice(i2 + 1 - 26, i2 + 1))) / 2;
+      const check = code => {
+        if (code === "A") return crossUp(tenkanP, kijunP, tenkan, kijun);
+        if (code === "B") return crossDown(tenkanP, kijunP, tenkan, kijun);
+        if (code === "C") return c > top && tenkan > kijun;
+        if (code === "D") return c < bottom && tenkan < kijun;
+        return false;
+      };
+      const chosen = chooseSideByConditions(ind, check, check);
+      side = chosen.side; score = side === "WAIT" ? 0 : 76; reasons.unshift(chosen.reason);
+    }
     values = { tenkan: round(tenkan), kijun: round(kijun), spanA: round(spanA), spanB: round(spanB), close: round(c) };
   }
 
@@ -537,6 +639,17 @@ function analyzeIndicator(candlesInput, indicator = {}, options = {}) {
     else if (cp > Sp && c < S) { side = "SELL"; score = 84; reasons.push("Parabolic SAR перешёл над цену."); }
     else if (c > S) { side = "BUY"; score = 58; reasons.push("Цена выше Parabolic SAR."); }
     else if (c < S) { side = "SELL"; score = 58; reasons.push("Цена ниже Parabolic SAR."); }
+    if (hasCustomConditions(ind)) {
+      const check = code => {
+        if (code === "A") return cp < Sp && c > S;   // SAR flipped below price
+        if (code === "B") return cp > Sp && c < S;   // SAR flipped above price
+        if (code === "C") return c > S;              // SAR below price
+        if (code === "D") return c < S;              // SAR above price
+        return false;
+      };
+      const chosen = chooseSideByConditions(ind, check, check);
+      side = chosen.side; score = side === "WAIT" ? 0 : 84; reasons.unshift(chosen.reason);
+    }
     values = { sar: round(S), prevSar: round(Sp), close: round(c) };
   }
 
@@ -547,6 +660,17 @@ function analyzeIndicator(candlesInput, indicator = {}, options = {}) {
     else if (S.dir === -1 && Sp.dir === 1) { side = "SELL"; score = 86; reasons.push("SuperTrend сменился вниз."); }
     else if (S.dir === 1) { side = "BUY"; score = 60; reasons.push("SuperTrend под ценой: тренд вверх."); }
     else if (S.dir === -1) { side = "SELL"; score = 60; reasons.push("SuperTrend над ценой: тренд вниз."); }
+    if (hasCustomConditions(ind)) {
+      const check = code => {
+        if (code === "A") return S.dir === 1 && Sp.dir === -1;  // just turned up
+        if (code === "B") return S.dir === -1 && Sp.dir === 1;  // just turned down
+        if (code === "C") return S.dir === 1;                   // currently up
+        if (code === "D") return S.dir === -1;                  // currently down
+        return false;
+      };
+      const chosen = chooseSideByConditions(ind, check, check);
+      side = chosen.side; score = side === "WAIT" ? 0 : 86; reasons.unshift(chosen.reason);
+    }
     values = { line: round(S.line), dir: S.dir, prevDir: Sp.dir };
   }
 
@@ -554,6 +678,17 @@ function analyzeIndicator(candlesInput, indicator = {}, options = {}) {
     const v = vortexSeries(candles, period); const V = last(v), Vp = v[v.length - 2];
     if (V.plus > V.minus) { side = "BUY"; score = crossUp(Vp.plus, Vp.minus, V.plus, V.minus) ? 82 : 62; reasons.push("+VI выше -VI."); }
     else if (V.minus > V.plus) { side = "SELL"; score = crossUp(Vp.minus, Vp.plus, V.minus, V.plus) ? 82 : 62; reasons.push("-VI выше +VI."); }
+    if (hasCustomConditions(ind)) {
+      const check = code => {
+        if (code === "A") return crossUp(Vp.plus, Vp.minus, V.plus, V.minus);
+        if (code === "B") return crossDown(Vp.plus, Vp.minus, V.plus, V.minus);
+        if (code === "C") return V.plus > V.minus;
+        if (code === "D") return V.minus > V.plus;
+        return false;
+      };
+      const chosen = chooseSideByConditions(ind, check, check);
+      side = chosen.side; score = side === "WAIT" ? 0 : 82; reasons.unshift(chosen.reason);
+    }
     values = { plusVI: round(V.plus), minusVI: round(V.minus) };
   }
 
@@ -562,6 +697,15 @@ function analyzeIndicator(candlesInput, indicator = {}, options = {}) {
     const recentHigh = highest(highs.slice(-depth - 1, -1)), recentLow = lowest(lows.slice(-depth - 1, -1));
     if (c > recentHigh) { side = "BUY"; score = 68; reasons.push("Цена пробила последний значимый максимум ZigZag."); }
     else if (c < recentLow) { side = "SELL"; score = 68; reasons.push("Цена пробила последний значимый минимум ZigZag."); }
+    if (hasCustomConditions(ind)) {
+      const check = code => {
+        if (code === "A") return c > recentHigh;
+        if (code === "B") return c < recentLow;
+        return false;
+      };
+      const chosen = chooseSideByConditions(ind, check, check);
+      side = chosen.side; score = side === "WAIT" ? 0 : 68; reasons.unshift(chosen.reason);
+    }
     values = { recentHigh: round(recentHigh), recentLow: round(recentLow), close: round(c) };
   }
 
@@ -569,6 +713,17 @@ function analyzeIndicator(candlesInput, indicator = {}, options = {}) {
     const atr = atrSeries(candles, period); const A = last(atr), Ap = atr[atr.length - 2], avgAtr = sma(atr.filter(v => v !== null), period) || A;
     if (A > avgAtr && A > Ap && c > cp) { side = "BUY"; score = 56; reasons.push("ATR растёт, последняя свеча вверх: импульс покупки."); }
     else if (A > avgAtr && A > Ap && c < cp) { side = "SELL"; score = 56; reasons.push("ATR растёт, последняя свеча вниз: импульс продажи."); }
+    if (hasCustomConditions(ind)) {
+      const check = code => {
+        if (code === "A") return A > Ap && c > cp;   // rising ATR, bullish candle
+        if (code === "B") return A > Ap && c < cp;   // rising ATR, bearish candle
+        if (code === "C") return A < Ap && c > cp;   // falling ATR, bullish candle
+        if (code === "D") return A < Ap && c < cp;   // falling ATR, bearish candle
+        return false;
+      };
+      const chosen = chooseSideByConditions(ind, check, check);
+      side = chosen.side; score = side === "WAIT" ? 0 : 56; reasons.unshift(chosen.reason);
+    }
     values = { atr: round(A), prev: round(Ap), avgAtr: round(avgAtr) };
   }
 
@@ -591,13 +746,24 @@ function analyzeIndicator(candlesInput, indicator = {}, options = {}) {
       else if (W > Wp && c < M) { side = "SELL"; score = 55; reasons.push("Ширина Bollinger растёт, цена ниже средней."); }
     }
     if (hasCustomConditions(ind)) {
-      const check = code => {
-        if (code === "A") return c < L;
-        if (code === "B") return c > U;
-        if (code === "C") return c >= L && c <= U;
+      const checkBB = code => {
+        if (code === "A") return cp < L && c > L;        // price crosses lower up (bounce)
+        if (code === "B") return cp > L && c < L;        // price crosses lower down (breakdown)
+        if (code === "C") return cp < M && c > M;        // price crosses middle up
+        if (code === "D") return cp > M && c < M;        // price crosses middle down
+        if (code === "E") return cp < U && c > U;        // price crosses upper up (breakout)
+        if (code === "F") return cp > U && c < U;        // price crosses upper down (rejection)
         return false;
       };
-      const chosen = chooseSideByConditions(ind, check, check);
+      const checkBBW = code => {
+        if (code === "A") return W > Wp && c > cp;       // width growing, bullish
+        if (code === "B") return W > Wp && c < cp;       // width growing, bearish
+        if (code === "C") return W < Wp && c > cp;       // width shrinking, bullish
+        if (code === "D") return W < Wp && c < cp;       // width shrinking, bearish
+        return false;
+      };
+      const checkFn = id === "bollinger-bands" ? checkBB : checkBBW;
+      const chosen = chooseSideByConditions(ind, checkFn, checkFn);
       side = chosen.side; score = side === "WAIT" ? 0 : 76; reasons.unshift(chosen.reason);
     }
     values = { upper: round(U), middle: round(M), lower: round(L), width: round(W), prevWidth: round(Wp) };
@@ -608,6 +774,18 @@ function analyzeIndicator(candlesInput, indicator = {}, options = {}) {
     const prevSlice = candles.slice(-p - 1, -1); const U = highest(prop(prevSlice, "high")), L = lowest(prop(prevSlice, "low"));
     if (c > U) { side = "BUY"; score = 76; reasons.push("Цена закрылась выше верхней границы Donchian."); }
     else if (c < L) { side = "SELL"; score = 76; reasons.push("Цена закрылась ниже нижней границы Donchian."); }
+    if (hasCustomConditions(ind)) {
+      const prevC = closes[closes.length - 2];
+      const check = code => {
+        if (code === "A") return c > U;                // breakout above upper
+        if (code === "B") return c < L;                // breakout below lower
+        if (code === "C") return prevC > U && c < U;   // rejection from upper
+        if (code === "D") return prevC < L && c > L;   // bounce from lower
+        return false;
+      };
+      const chosen = chooseSideByConditions(ind, check, check);
+      side = chosen.side; score = side === "WAIT" ? 0 : 76; reasons.unshift(chosen.reason);
+    }
     values = { upper: round(U), lower: round(L), close: round(c) };
   }
 
@@ -616,6 +794,19 @@ function analyzeIndicator(candlesInput, indicator = {}, options = {}) {
     const mid = smaSeries(closes, p); const M = last(mid), Mp = mid[mid.length - 2]; const U = M * (1 + dev), L = M * (1 - dev), Up = Mp * (1 + dev), Lp = Mp * (1 - dev);
     if (cp < Lp && c > L) { side = "BUY"; score = 76; reasons.push("Цена вернулась внутрь канала Envelopes от нижней границы."); }
     else if (cp > Up && c < U) { side = "SELL"; score = 76; reasons.push("Цена вернулась внутрь канала Envelopes от верхней границы."); }
+    if (hasCustomConditions(ind)) {
+      const check = code => {
+        if (code === "A") return cp < L && c > L;
+        if (code === "B") return cp > L && c < L;
+        if (code === "C") return cp < M && c > M;
+        if (code === "D") return cp > M && c < M;
+        if (code === "E") return cp < U && c > U;
+        if (code === "F") return cp > U && c < U;
+        return false;
+      };
+      const chosen = chooseSideByConditions(ind, check, check);
+      side = chosen.side; score = side === "WAIT" ? 0 : 76; reasons.unshift(chosen.reason);
+    }
     values = { upper: round(U), middle: round(M), lower: round(L) };
   }
 
@@ -627,6 +818,19 @@ function analyzeIndicator(candlesInput, indicator = {}, options = {}) {
     else if (cp > Up && c < U) { side = "SELL"; score = 76; reasons.push("Цена вернулась внутрь Keltner от верхней границы."); }
     else if (c > U) { side = "BUY"; score = 58; reasons.push("Цена выше верхнего Keltner: импульс вверх."); }
     else if (c < L) { side = "SELL"; score = 58; reasons.push("Цена ниже нижнего Keltner: импульс вниз."); }
+    if (hasCustomConditions(ind)) {
+      const check = code => {
+        if (code === "A") return cp < L && c > L;
+        if (code === "B") return cp > L && c < L;
+        if (code === "C") return cp < M && c > M;
+        if (code === "D") return cp > M && c < M;
+        if (code === "E") return cp < U && c > U;
+        if (code === "F") return cp > U && c < U;
+        return false;
+      };
+      const chosen = chooseSideByConditions(ind, check, check);
+      side = chosen.side; score = side === "WAIT" ? 0 : 76; reasons.unshift(chosen.reason);
+    }
     values = { upper: round(U), middle: round(M), lower: round(L), atr: round(A) };
   }
 
@@ -643,6 +847,26 @@ function analyzeIndicator(candlesInput, indicator = {}, options = {}) {
     else if (Vp >= 0 && V < 0) { side = "SELL"; score = 80; reasons.push((id === "awesome-oscillator" ? "AO" : "AC") + " пересёк ноль вниз."); }
     else if (V > 0 && V > Vp) { side = "BUY"; score = 58; reasons.push((id === "awesome-oscillator" ? "AO" : "AC") + " положительный и растёт."); }
     else if (V < 0 && V < Vp) { side = "SELL"; score = 58; reasons.push((id === "awesome-oscillator" ? "AO" : "AC") + " отрицательный и падает."); }
+    if (hasCustomConditions(ind)) {
+      const check = code => {
+        if (id === "awesome-oscillator") {
+          if (code === "A") return Vp <= 0 && V > 0;    // crosses zero up
+          if (code === "B") return Vp >= 0 && V < 0;    // crosses zero down
+          if (code === "C") return V > 0 && V > Vp;     // green bar above zero
+          if (code === "D") return V > 0 && V < Vp;     // red bar above zero
+          if (code === "E") return V < 0 && V > Vp;     // green bar below zero
+          if (code === "F") return V < 0 && V < Vp;     // red bar below zero
+        } else {
+          if (code === "A") return Vp <= 0 && V > 0;
+          if (code === "B") return Vp >= 0 && V < 0;
+          if (code === "C") return V > Vp;               // bar turned green
+          if (code === "D") return V < Vp;               // bar turned red
+        }
+        return false;
+      };
+      const chosen = chooseSideByConditions(ind, check, check);
+      side = chosen.side; score = side === "WAIT" ? 0 : 80; reasons.unshift(chosen.reason);
+    }
     values = { value: round(V), prev: round(Vp), ao: round(last(ao)), ac: round(last(ac)) };
   }
 
@@ -652,6 +876,20 @@ function analyzeIndicator(candlesInput, indicator = {}, options = {}) {
     if (A >= trendLevel && P > M) { side = "BUY"; score = clamp(55 + (A - trendLevel), 58, 90); reasons.push(`ADX ${round(A)} выше ${trendLevel}, +DI выше -DI.`); }
     else if (A >= trendLevel && M > P) { side = "SELL"; score = clamp(55 + (A - trendLevel), 58, 90); reasons.push(`ADX ${round(A)} выше ${trendLevel}, -DI выше +DI.`); }
     else reasons.push(`ADX ниже ${trendLevel}: тренд слабый.`);
+    if (hasCustomConditions(ind)) {
+      const Ap2 = a.adx[a.adx.length - 2], Pp2 = a.plusDI[a.plusDI.length - 2], Mp2 = a.minusDI[a.minusDI.length - 2];
+      const check = code => {
+        if (code === "A") return crossUp(Pp2, Mp2, P, M);              // +DI crosses -DI up
+        if (code === "B") return crossDown(Pp2, Mp2, P, M);             // +DI crosses -DI down
+        if (code === "C") return P > M && Ap2 < 25 && A >= 25;          // +DI>-DI, ADX crosses 25 up
+        if (code === "D") return M > P && Ap2 < 25 && A >= 25;          // -DI>+DI, ADX crosses 25 up
+        if (code === "E") return P > M;                                  // +DI > -DI
+        if (code === "F") return M > P;                                  // -DI > +DI
+        return false;
+      };
+      const chosen = chooseSideByConditions(ind, check, check);
+      side = chosen.side; score = side === "WAIT" ? 0 : 82; reasons.unshift(chosen.reason);
+    }
     values = { adx: round(A), plusDI: round(P), minusDI: round(M), trendLevel };
   }
 
@@ -666,6 +904,24 @@ function analyzeIndicator(candlesInput, indicator = {}, options = {}) {
     } else {
       if (BEAR < 0 && BEAR < BEARp && E <= Ep) { side = "SELL"; score = 62; reasons.push("Bears Power ниже нуля и усиливается вниз."); }
       else if (BEAR < 0 && BEAR > BEARp) { side = "BUY"; score = 58; reasons.push("Bears Power теряет силу, продавец слабеет."); }
+    }
+    if (hasCustomConditions(ind)) {
+      const check = code => {
+        if (id === "bulls-power") {
+          if (code === "A") return BULL > 0 && BULL > BULLp;          // BP positive and rising
+          if (code === "B") return BULL > 0 && BULL < BULLp;          // BP positive and falling
+          if (code === "C") return BULLp <= 0 && BULL > 0;            // BP crosses zero up
+          if (code === "D") return BULLp >= 0 && BULL < 0;            // BP crosses zero down
+        } else {
+          if (code === "A") return BEAR < 0 && BEAR < BEARp;          // BP negative and falling
+          if (code === "B") return BEAR < 0 && BEAR > BEARp;          // BP negative and rising (weakening)
+          if (code === "C") return BEARp <= 0 && BEAR > 0;            // BP crosses zero up
+          if (code === "D") return BEARp >= 0 && BEAR < 0;            // BP crosses zero down
+        }
+        return false;
+      };
+      const chosen = chooseSideByConditions(ind, check, check);
+      side = chosen.side; score = side === "WAIT" ? 0 : 62; reasons.unshift(chosen.reason);
     }
     values = { bulls: round(BULL), bears: round(BEAR), ema: round(E) };
   }
@@ -693,6 +949,15 @@ function analyzeIndicator(candlesInput, indicator = {}, options = {}) {
     } else if (upVal !== null) {
       side = "SELL"; score = 70; reasons.push(`Верхний фрактал подтверждён (${upAge} св. назад) — разворот вниз.`);
     }
+    if (hasCustomConditions(ind)) {
+      const check = code => {
+        if (code === "A") return downVal !== null;   // down fractal confirmed = BUY
+        if (code === "B") return upVal !== null;     // up fractal confirmed = SELL
+        return false;
+      };
+      const chosen = chooseSideByConditions(ind, check, check);
+      side = chosen.side; score = side === "WAIT" ? 0 : 70; reasons.unshift(chosen.reason);
+    }
     values = { lastUpperFractal: round(upVal), lastLowerFractal: round(downVal), close: round(c), upAge, downAge };
   }
 
@@ -704,6 +969,18 @@ function analyzeIndicator(candlesInput, indicator = {}, options = {}) {
     else if (Vp >= mid && V < mid) { side = "SELL"; score = 78; reasons.push((id === "momentum" ? "Momentum" : "ROC") + " пересёк центральную линию вниз."); }
     else if (V > mid && V > Vp) { side = "BUY"; score = 56; reasons.push((id === "momentum" ? "Momentum" : "ROC") + " выше центральной линии и растёт."); }
     else if (V < mid && V < Vp) { side = "SELL"; score = 56; reasons.push((id === "momentum" ? "Momentum" : "ROC") + " ниже центральной линии и падает."); }
+    if (hasCustomConditions(ind)) {
+      const midVal = id === "momentum" ? 100 : 0;
+      const check = code => {
+        if (code === "A") return Vp < midVal && V >= midVal;   // crosses mid up
+        if (code === "B") return Vp > midVal && V <= midVal;   // crosses mid down
+        if (code === "C") return V > Vp;                       // current > previous
+        if (code === "D") return V < Vp;                       // current < previous
+        return false;
+      };
+      const chosen = chooseSideByConditions(ind, check, check);
+      side = chosen.side; score = side === "WAIT" ? 0 : 78; reasons.unshift(chosen.reason);
+    }
     values = { value: round(V), prev: round(Vp), center: mid };
   }
 
