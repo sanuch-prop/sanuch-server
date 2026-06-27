@@ -946,13 +946,16 @@ class SignalRunner {
 
     // 2. Payout filter (use combo's own minPayoutPercent)
     const minPayout = Number(combo.minPayoutPercent || 75);
-    const payout = this.payoutStore?.get(symbol);
-    if (payout) {
-      const pct = Number(payout.payoutPercent || 0);
-      if (pct < minPayout) {
-        this._logEvent("skip", symbol, `${label} Payout ${pct}% < ${minPayout}% — пропуск`);
-        return;
-      }
+    const rawPayoutCombo = this.payoutStore?.get(symbol) || null;
+    const payoutAgeCombo = rawPayoutCombo ? (Date.now() - (rawPayoutCombo.updatedAtMs || 0)) : Infinity;
+    const payout = payoutAgeCombo < 2 * 60 * 60 * 1000 ? rawPayoutCombo : null;
+    if (!payout) {
+      this._logEvent("skip", symbol, `${label} Нет данных о доходности для ${symbol} (мин. ${minPayout}%)`);
+      return;
+    }
+    if (Number(payout.payoutPercent || 0) < minPayout) {
+      this._logEvent("skip", symbol, `${label} Payout ${payout.payoutPercent}% < ${minPayout}% — пропуск`);
+      return;
     }
 
     // 3 & 4. In-flight tracking — reliable lock from task creation until trade expires
@@ -975,6 +978,10 @@ class SignalRunner {
       }
     }
 
+    // Pre-lock slot immediately (before any async work) to prevent concurrent duplicate opens
+    const lockMs = Number(expirySec) * 3 * 1000 + 30000;
+    this._comboInFlight.set(inFlightKey, { comboId: combo.id, symbol, expiresAt: now + lockMs });
+
     // 5. Martingale: use combo's own mg settings if configured
     const iSett = combo.reglamentSettings || {};
     const baseAmount = Number(combo.amount || this.config.amount || 1);
@@ -982,7 +989,8 @@ class SignalRunner {
     const mgEnabled = hasMg ? (iSett['mg1_enabled'] !== 'off') : false;
 
     let tradeAmount = baseAmount;
-    let tradeExpirySec = Number(expirySec);
+    // If combo has its own expirySec set in reglement, it overrides the individual indicator's expiry
+    let tradeExpirySec = Number(combo.expirySec || 0) > 0 ? Number(combo.expirySec) : Number(expirySec);
     let tradeAction = action;
     let mgStep = 0;
 
@@ -1029,13 +1037,17 @@ class SignalRunner {
     });
 
     if (taskResult.ok) {
-      // Lock this slot until the trade fully expires (expiry × 3 + 30s buffer)
-      const lockMs = tradeExpirySec * 3 * 1000 + 30000;
-      this._comboInFlight.set(inFlightKey, { comboId: combo.id, symbol, expiresAt: now + lockMs });
+      // Update lock expiry using actual tradeExpirySec (may differ from expirySec if martingale overrode it)
+      const actualLockMs = tradeExpirySec * 3 * 1000 + 30000;
+      this._comboInFlight.set(inFlightKey, { comboId: combo.id, symbol, expiresAt: now + actualLockMs });
       this.createdTotal += 1;
-      this._logEvent("trade", symbol, `${label} Открытие: ${tradeAction.toUpperCase()} $${tradeAmount} ${tradeExpirySec}с${mgStep > 0 ? ` [МГ шаг ${mgStep}]` : ""} (блок ${Math.round(lockMs/1000)}с)`);
-    } else if (taskResult.error !== "DUPLICATE_TASK") {
-      this._logEvent("error", symbol, `${label} Ошибка: ${(taskResult.errors || []).join("; ")}`);
+      this._logEvent("trade", symbol, `${label} Открытие: ${tradeAction.toUpperCase()} $${tradeAmount} ${tradeExpirySec}с${mgStep > 0 ? ` [МГ шаг ${mgStep}]` : ""} (блок ${Math.round(actualLockMs/1000)}с)`);
+    } else {
+      // Task not created — release the pre-lock so this slot can retry
+      this._comboInFlight.delete(inFlightKey);
+      if (taskResult.error !== "DUPLICATE_TASK") {
+        this._logEvent("error", symbol, `${label} Ошибка: ${(taskResult.errors || []).join("; ")}`);
+      }
     }
   }
 

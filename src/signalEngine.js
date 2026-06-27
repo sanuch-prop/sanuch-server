@@ -671,14 +671,22 @@ function analyzeIndicator(candlesInput, indicator = {}, options = {}) {
   }
 
   else if (id === "fractals") {
-    let up = null, down = null;
-    for (let i = 2; i < candles.length - 2; i++) {
-      if (n(candles[i].high) > n(candles[i-1].high) && n(candles[i].high) > n(candles[i-2].high) && n(candles[i].high) > n(candles[i+1].high) && n(candles[i].high) > n(candles[i+2].high)) up = candles[i].high;
-      if (n(candles[i].low) < n(candles[i-1].low) && n(candles[i].low) < n(candles[i-2].low) && n(candles[i].low) < n(candles[i+1].low) && n(candles[i].low) < n(candles[i+2].low)) down = candles[i].low;
+    // maxAge: how many candles AFTER fractal confirmation we still allow a signal.
+    // age=0 means fractal was just confirmed this candle; age=1 means 1 candle ago, etc.
+    // Default 3 — signal fires for up to 3 candles after the fractal confirmed, then goes silent.
+    const maxAge = Number(getSetting(ind, "maxAge", 3));
+    const idx = candles.length - 1;
+    let upVal = null, downVal = null, upAge = Infinity, downAge = Infinity;
+    // Search newest-first so we pick the most recent fractal within the window
+    for (let i = idx - 2; i >= Math.max(2, idx - 2 - maxAge); i--) {
+      const age = (idx - 2) - i; // 0 = just confirmed, 1 = 1 candle ago …
+      if (upVal === null && n(candles[i].high) > n(candles[i-1].high) && n(candles[i].high) > n(candles[i-2].high) && n(candles[i].high) > n(candles[i+1].high) && n(candles[i].high) > n(candles[i+2].high)) { upVal = n(candles[i].high); upAge = age; }
+      if (downVal === null && n(candles[i].low) < n(candles[i-1].low) && n(candles[i].low) < n(candles[i-2].low) && n(candles[i].low) < n(candles[i+1].low) && n(candles[i].low) < n(candles[i+2].low)) { downVal = n(candles[i].low); downAge = age; }
+      if (upVal !== null && downVal !== null) break;
     }
-    if (up !== null && c > up) { side = "BUY"; score = 70; reasons.push("Цена пробила последний верхний фрактал."); }
-    else if (down !== null && c < down) { side = "SELL"; score = 70; reasons.push("Цена пробила последний нижний фрактал."); }
-    values = { lastUpperFractal: round(up), lastLowerFractal: round(down), close: round(c) };
+    if (upVal !== null && c > upVal) { side = "BUY"; score = 70; reasons.push(`Цена пробила верхний фрактал (${upAge} св. назад).`); }
+    else if (downVal !== null && c < downVal) { side = "SELL"; score = 70; reasons.push(`Цена пробила нижний фрактал (${downAge} св. назад).`); }
+    values = { lastUpperFractal: round(upVal), lastLowerFractal: round(downVal), close: round(c), upAge, downAge };
   }
 
   else if (id === "momentum" || id === "rate-of-change") {
