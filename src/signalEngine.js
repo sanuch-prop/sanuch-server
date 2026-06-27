@@ -671,21 +671,28 @@ function analyzeIndicator(candlesInput, indicator = {}, options = {}) {
   }
 
   else if (id === "fractals") {
-    // maxAge: how many candles AFTER fractal confirmation we still allow a signal.
-    // age=0 means fractal was just confirmed this candle; age=1 means 1 candle ago, etc.
-    // Default 1 — signal fires only on the candle the fractal is confirmed, then immediately goes silent.
+    // Reversal logic: signal fires IMMEDIATELY when fractal is confirmed (2 candles after peak/low).
+    // DOWN fractal (local low) confirmed → BUY (reversal up expected).
+    // UP fractal (local high) confirmed → SELL (reversal down expected).
+    // maxAge=1: signal active for 1 extra candle after confirmation, then dies.
+    // This means the trade opens within 1-2 candles of the fractal appearing — not 8 candles later.
     const maxAge = Number(getSetting(ind, "maxAge", 1));
     const idx = candles.length - 1;
     let upVal = null, downVal = null, upAge = Infinity, downAge = Infinity;
-    // Search newest-first so we pick the most recent fractal within the window
     for (let i = idx - 2; i >= Math.max(2, idx - 2 - maxAge); i--) {
-      const age = (idx - 2) - i; // 0 = just confirmed, 1 = 1 candle ago …
-      if (upVal === null && n(candles[i].high) > n(candles[i-1].high) && n(candles[i].high) > n(candles[i-2].high) && n(candles[i].high) > n(candles[i+1].high) && n(candles[i].high) > n(candles[i+2].high)) { upVal = n(candles[i].high); upAge = age; }
-      if (downVal === null && n(candles[i].low) < n(candles[i-1].low) && n(candles[i].low) < n(candles[i-2].low) && n(candles[i].low) < n(candles[i+1].low) && n(candles[i].low) < n(candles[i+2].low)) { downVal = n(candles[i].low); downAge = age; }
+      const age = (idx - 2) - i; // 0 = just confirmed this scan, 1 = 1 candle ago
+      const isUp   = n(candles[i].high) > n(candles[i-1].high) && n(candles[i].high) > n(candles[i-2].high) && n(candles[i].high) > n(candles[i+1].high) && n(candles[i].high) > n(candles[i+2].high);
+      const isDown = n(candles[i].low)  < n(candles[i-1].low)  && n(candles[i].low)  < n(candles[i-2].low)  && n(candles[i].low)  < n(candles[i+1].low)  && n(candles[i].low)  < n(candles[i+2].low);
+      if (upVal   === null && isUp)   { upVal   = n(candles[i].high); upAge   = age; }
+      if (downVal === null && isDown) { downVal = n(candles[i].low);  downAge = age; }
       if (upVal !== null && downVal !== null) break;
     }
-    if (upVal !== null && c > upVal) { side = "BUY"; score = 70; reasons.push(`Цена пробила верхний фрактал (${upAge} св. назад).`); }
-    else if (downVal !== null && c < downVal) { side = "SELL"; score = 70; reasons.push(`Цена пробила нижний фрактал (${downAge} св. назад).`); }
+    // Prefer the most recently confirmed fractal; DOWN → BUY, UP → SELL
+    if (downVal !== null && (upVal === null || downAge <= upAge)) {
+      side = "BUY"; score = 70; reasons.push(`Нижний фрактал подтверждён (${downAge} св. назад) — разворот вверх.`);
+    } else if (upVal !== null) {
+      side = "SELL"; score = 70; reasons.push(`Верхний фрактал подтверждён (${upAge} св. назад) — разворот вниз.`);
+    }
     values = { lastUpperFractal: round(upVal), lastLowerFractal: round(downVal), close: round(c), upAge, downAge };
   }
 
