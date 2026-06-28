@@ -377,17 +377,27 @@ function analyzeIndicator(candlesInput, indicator = {}, options = {}) {
   const name = indicator.name || id;
   const timeframe = String(indicator.timeframe || indicator.settings?.timeframe || options.timeframe || CONFIG.signal.defaultTimeframe).toUpperCase();
   const symbol = normalizeSymbol(options.symbol || indicator.symbol || candlesInput?.[0]?.symbol || "EURUSD_otc");
-  const candles = closedCandles(candlesInput || []);
-  const closes = prop(candles, "close");
-  const highs = prop(candles, "high"), lows = prop(candles, "low");
   const expirySec = n(indicator.expirySec || indicator.settings?.expirySec || options.expirySec || 15, 15);
   const ind = { ...indicator, id, name, expirySec };
   const period = n(getSetting(ind, ["period", "основной период"], 14), 14);
-  const lc = last(candles);
-  const c = last(closes), cp = closes[closes.length - 2];
   let missing;
 
+  let candles = closedCandles(candlesInput || []);
+
+  // MA handles barShift internally via idx offset
   if (id === "moving-average" || id === "sma_cross" || id === "sma-cross") return analyzeMovingAverage(candles, ind, symbol, timeframe);
+
+  // Global barShift: trim candles so all indicators evaluate N candles in the past.
+  // barShift=0 → current candle, barShift=1 → previous candle, etc.
+  // Cross-based conditions (e.g. Rp < 30 && R >= 30) are naturally one-shot —
+  // they fire only on the exact candle of the event, never on later candles.
+  const barShift = Math.max(0, n(getSetting(ind, ["barShift", "barCheck"], 0)));
+  if (barShift > 0 && candles.length > barShift + 5) candles = candles.slice(0, candles.length - barShift);
+
+  const closes = prop(candles, "close");
+  const highs = prop(candles, "high"), lows = prop(candles, "low");
+  const lc = last(candles);
+  const c = last(closes), cp = closes[closes.length - 2];
 
   if (["rsi", "cci", "demarker", "macd", "osma", "stochastic", "williams-r", "schaff-trend-cycle"].includes(id)) {
     missing = needCandles(candles, Math.max(35, period + 5), id, name, symbol, timeframe); if (missing) return missing;
