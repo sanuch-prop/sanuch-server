@@ -474,7 +474,7 @@ function analyzeIndicator(candlesInput, indicator = {}, options = {}) {
       else if (H > 0 && H > Hp) { side = "BUY"; score = 58; reasons.push("OsMA положительная и растёт."); }
       else if (H < 0 && H < Hp) { side = "SELL"; score = 58; reasons.push("OsMA отрицательная и падает."); }
     }
-    if (hasCustomConditions(ind)) {
+    if (id === "macd" && hasCustomConditions(ind)) {
       const check = code => {
         if (code === "A") return M > S;
         if (code === "B") return M > S && M > 0 && S > 0;
@@ -496,6 +496,17 @@ function analyzeIndicator(candlesInput, indicator = {}, options = {}) {
       };
       const chosen = chooseSideByConditions(ind, check, check);
       side = chosen.side; score = side === "WAIT" ? 0 : 84; reasons.unshift(chosen.reason);
+    }
+    if (id === "osma" && hasCustomConditions(ind)) {
+      const check = code => {
+        if (code === "A") return Hp <= 0 && H > 0;
+        if (code === "B") return Hp >= 0 && H < 0;
+        if (code === "C") return H > Hp;
+        if (code === "D") return H < Hp;
+        return false;
+      };
+      const chosen = chooseSideByConditions(ind, check, check);
+      side = chosen.side; score = side === "WAIT" ? 0 : 82; reasons.unshift(chosen.reason);
     }
     values = { macd: round(M), signal: round(S), hist: round(H), prevHist: round(Hp) };
   }
@@ -561,6 +572,17 @@ function analyzeIndicator(candlesInput, indicator = {}, options = {}) {
     else if (Sp > 80 && S <= 80) { side = "SELL"; score = 82; reasons.push("STC вышел из верхней зоны вниз."); }
     else if (S > Sp && S < 50) { side = "BUY"; score = 58; reasons.push("STC растёт после нижней зоны."); }
     else if (S < Sp && S > 50) { side = "SELL"; score = 58; reasons.push("STC падает после верхней зоны."); }
+    if (hasCustomConditions(ind)) {
+      const check = code => {
+        if (code === "A") return Sp < 20 && S >= 20;
+        if (code === "B") return Sp > 20 && S <= 20;
+        if (code === "C") return Sp < 80 && S >= 80;
+        if (code === "D") return Sp > 80 && S <= 80;
+        return false;
+      };
+      const chosen = chooseSideByConditions(ind, check, check);
+      side = chosen.side; score = side === "WAIT" ? 0 : 82; reasons.unshift(chosen.reason);
+    }
     values = { stc: round(S), prev: round(Sp) };
   }
 
@@ -682,8 +704,6 @@ function analyzeIndicator(candlesInput, indicator = {}, options = {}) {
       const check = code => {
         if (code === "A") return crossUp(Vp.plus, Vp.minus, V.plus, V.minus);
         if (code === "B") return crossDown(Vp.plus, Vp.minus, V.plus, V.minus);
-        if (code === "C") return V.plus > V.minus;
-        if (code === "D") return V.minus > V.plus;
         return false;
       };
       const chosen = chooseSideByConditions(ind, check, check);
