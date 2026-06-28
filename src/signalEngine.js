@@ -196,8 +196,8 @@ function chooseSideByConditions(ind, checkBuy, checkSell) {
   const sellCond = ind?.settings?.sellCondition || getSetting(ind, "sellCondition", "");
   const buyCode = conditionCode(buyCond);
   const sellCode = conditionCode(sellCond);
-  const buy = buyCode && !["D", "Q"].includes(buyCode) ? checkBuy(buyCode) : false;
-  const sell = sellCode && !["D", "Q"].includes(sellCode) ? checkSell(sellCode) : false;
+  const buy = buyCode && !["Q"].includes(buyCode) ? checkBuy(buyCode) : false;
+  const sell = sellCode && !["Q"].includes(sellCode) ? checkSell(sellCode) : false;
   if (buy && !sell) return { side: "BUY", reason: `Условие покупки ${buyCode} совпало.` };
   if (sell && !buy) return { side: "SELL", reason: `Условие продажи ${sellCode} совпало.` };
   if (buy && sell) return { side: "WAIT", reason: `Конфликт условий: покупка ${buyCode} и продажа ${sellCode} совпали одновременно.` };
@@ -357,10 +357,14 @@ function analyzeMovingAverage(candles, ind, symbol, timeframe) {
   if (hasCustomConditions(ind)) {
     const fast = series[0], slow = series[1] || series[0];
     const F = pickIndex(fast, idx), S = pickIndex(slow, idx), Fp = pickIndex(fast, idx - 1), Sp = pickIndex(slow, idx - 1);
-    const chosen = chooseSideByConditions(ind,
-      code => code === "A" ? F > S : code === "C" ? crossUp(Fp, Sp, F, S) : code === "E" ? close > main : code === "G" ? close > main && close > prevClose : false,
-      code => code === "B" ? F < S : code === "D" ? crossDown(Fp, Sp, F, S) : code === "F" ? close < main : code === "H" ? close < main && close < prevClose : false
-    );
+    const check = code => {
+      if (code === "A" || code === "B") return crossUp(Fp, Sp, F, S);   // fast crosses slow up
+      if (code === "C" || code === "D") return crossDown(Fp, Sp, F, S); // fast crosses slow down
+      if (code === "E" || code === "F") return prevClose < prevMain && close > main; // price crosses main MA up
+      if (code === "G" || code === "H") return prevClose > prevMain && close < main; // price crosses main MA down
+      return false;
+    };
+    const chosen = chooseSideByConditions(ind, check, check);
     side = chosen.side;
     reasons.unshift(chosen.reason);
   }
@@ -402,12 +406,12 @@ function analyzeIndicator(candlesInput, indicator = {}, options = {}) {
     else if (R > overbought && R < Rp) { side = "SELL"; score = 62; reasons.push(`RSI выше ${overbought}, но начал падать.`); }
     if (hasCustomConditions(ind)) {
       const check = code => {
-        if (code === "A") return Rp < 30 && R >= 30;   // crosses 30 up
-        if (code === "B") return Rp > 30 && R <= 30;   // crosses 30 down
-        if (code === "C") return Rp < 50 && R >= 50;   // crosses 50 up
-        if (code === "D") return Rp > 50 && R <= 50;   // crosses 50 down
-        if (code === "E") return Rp < 70 && R >= 70;   // crosses 70 up
-        if (code === "F") return Rp > 70 && R <= 70;   // crosses 70 down
+        if (code === "A" || code === "B") return Rp < 30 && R >= 30;   // crosses 30 up
+        if (code === "C" || code === "D") return Rp > 30 && R <= 30;   // crosses 30 down
+        if (code === "E" || code === "F") return Rp < 50 && R >= 50;   // crosses 50 up
+        if (code === "G" || code === "H") return Rp > 50 && R <= 50;   // crosses 50 down
+        if (code === "I" || code === "J") return Rp < 70 && R >= 70;   // crosses 70 up
+        if (code === "K" || code === "L") return Rp > 70 && R <= 70;   // crosses 70 down
         return false;
       };
       const chosen = chooseSideByConditions(ind, check, check);
@@ -424,12 +428,12 @@ function analyzeIndicator(candlesInput, indicator = {}, options = {}) {
     else if (C < -100) { side = "SELL"; score = 58; reasons.push("CCI ниже -100: сильный продавцовский импульс."); }
     if (hasCustomConditions(ind)) {
       const check = code => {
-        if (code === "A") return Cp < -100 && C >= -100;  // crosses -100 up
-        if (code === "B") return Cp > -100 && C <= -100;  // crosses -100 down
-        if (code === "C") return Cp < 0 && C >= 0;        // crosses 0 up
-        if (code === "D") return Cp > 0 && C <= 0;        // crosses 0 down
-        if (code === "E") return Cp < 100 && C >= 100;    // crosses +100 up
-        if (code === "F") return Cp > 100 && C <= 100;    // crosses +100 down
+        if (code === "A" || code === "B") return Cp < -100 && C >= -100;  // crosses -100 up
+        if (code === "C" || code === "D") return Cp > -100 && C <= -100;  // crosses -100 down
+        if (code === "E" || code === "F") return Cp < 0 && C >= 0;        // crosses 0 up
+        if (code === "G" || code === "H") return Cp > 0 && C <= 0;        // crosses 0 down
+        if (code === "I" || code === "J") return Cp < 100 && C >= 100;    // crosses +100 up
+        if (code === "K" || code === "L") return Cp > 100 && C <= 100;    // crosses +100 down
         return false;
       };
       const chosen = chooseSideByConditions(ind, check, check);
@@ -446,12 +450,12 @@ function analyzeIndicator(candlesInput, indicator = {}, options = {}) {
     else if (D > 0.7 && D < Dp) { side = "SELL"; score = 60; reasons.push("DeMarker в перекупленности и падает."); }
     if (hasCustomConditions(ind)) {
       const check = code => {
-        if (code === "A") return Dp < 0.3 && D >= 0.3;
-        if (code === "B") return Dp > 0.3 && D <= 0.3;
-        if (code === "C") return Dp < 0.5 && D >= 0.5;
-        if (code === "D") return Dp > 0.5 && D <= 0.5;
-        if (code === "E") return Dp < 0.7 && D >= 0.7;
-        if (code === "F") return Dp > 0.7 && D <= 0.7;
+        if (code === "A" || code === "B") return Dp < 0.3 && D >= 0.3;
+        if (code === "C" || code === "D") return Dp > 0.3 && D <= 0.3;
+        if (code === "E" || code === "F") return Dp < 0.5 && D >= 0.5;
+        if (code === "G" || code === "H") return Dp > 0.5 && D <= 0.5;
+        if (code === "I" || code === "J") return Dp < 0.7 && D >= 0.7;
+        if (code === "K" || code === "L") return Dp > 0.7 && D <= 0.7;
         return false;
       };
       const chosen = chooseSideByConditions(ind, check, check);
@@ -476,22 +480,14 @@ function analyzeIndicator(candlesInput, indicator = {}, options = {}) {
     }
     if (id === "macd" && hasCustomConditions(ind)) {
       const check = code => {
-        if (code === "A") return M > S;
-        if (code === "B") return M > S && M > 0 && S > 0;
-        if (code === "C") return M > S && M < 0 && S < 0;
-        if (code === "D") return M < S;
-        if (code === "E") return M < S && M > 0 && S > 0;
-        if (code === "F") return M < S && M < 0 && S < 0;
-        if (code === "G") return M > 0;
-        if (code === "H") return M < 0;
-        if (code === "I") return S > 0;
-        if (code === "J") return S < 0;
-        if (code === "K") return crossDown(Mp, Sp, M, S);
-        if (code === "L") return crossDown(Mp, Sp, M, S) && M > 0 && S > 0;
-        if (code === "M") return crossDown(Mp, Sp, M, S) && M < 0 && S < 0;
-        if (code === "N") return crossUp(Mp, Sp, M, S);
-        if (code === "O") return crossUp(Mp, Sp, M, S) && M > 0 && S > 0;
-        if (code === "P") return crossUp(Mp, Sp, M, S) && M < 0 && S < 0;
+        if (code === "A" || code === "B") return crossUp(Mp, Sp, M, S);
+        if (code === "C" || code === "D") return crossUp(Mp, Sp, M, S) && M > 0 && S > 0;
+        if (code === "E" || code === "F") return crossUp(Mp, Sp, M, S) && M < 0 && S < 0;
+        if (code === "G" || code === "H") return crossDown(Mp, Sp, M, S);
+        if (code === "I" || code === "J") return crossDown(Mp, Sp, M, S) && M > 0 && S > 0;
+        if (code === "K" || code === "L") return crossDown(Mp, Sp, M, S) && M < 0 && S < 0;
+        if (code === "M" || code === "N") return M > S && H > Hp;
+        if (code === "O" || code === "P") return M < S && H < Hp;
         return false;
       };
       const chosen = chooseSideByConditions(ind, check, check);
@@ -499,10 +495,10 @@ function analyzeIndicator(candlesInput, indicator = {}, options = {}) {
     }
     if (id === "osma" && hasCustomConditions(ind)) {
       const check = code => {
-        if (code === "A") return Hp <= 0 && H > 0;
-        if (code === "B") return Hp >= 0 && H < 0;
-        if (code === "C") return H > Hp;
-        if (code === "D") return H < Hp;
+        if (code === "A" || code === "B") return Hp <= 0 && H > 0;
+        if (code === "C" || code === "D") return Hp >= 0 && H < 0;
+        if (code === "E" || code === "F") return H > Hp;
+        if (code === "G" || code === "H") return H < Hp;
         return false;
       };
       const chosen = chooseSideByConditions(ind, check, check);
@@ -520,16 +516,14 @@ function analyzeIndicator(candlesInput, indicator = {}, options = {}) {
     else if (K > 80 && K < Kp) { side = "SELL"; score = 60; reasons.push("Stochastic в перекупленности и разворачивается вниз."); }
     if (hasCustomConditions(ind)) {
       const check = code => {
-        if (code === "A") return crossUp(Kp, Dp, K, D) && K < 20;
-        if (code === "B") return crossDown(Kp, Dp, K, D) && K < 20;
-        if (code === "C") return crossUp(Kp, Dp, K, D) && K >= 20 && K <= 80;
-        if (code === "D") return crossDown(Kp, Dp, K, D) && K >= 20 && K <= 80;
-        if (code === "E") return crossUp(Kp, Dp, K, D) && K > 80;
-        if (code === "F") return crossDown(Kp, Dp, K, D) && K > 80;
-        if (code === "G") return Kp < 20 && K >= 20;
-        if (code === "H") return Kp < 80 && K >= 80;
-        if (code === "I") return Kp > 20 && K <= 20;
-        if (code === "J") return Kp > 80 && K <= 80;
+        if (code === "A" || code === "B") return crossUp(Kp, Dp, K, D) && K < 20;
+        if (code === "C" || code === "D") return crossDown(Kp, Dp, K, D) && K < 20;
+        if (code === "E" || code === "F") return crossUp(Kp, Dp, K, D) && K >= 20 && K <= 80;
+        if (code === "G" || code === "H") return crossDown(Kp, Dp, K, D) && K >= 20 && K <= 80;
+        if (code === "I" || code === "J") return crossUp(Kp, Dp, K, D) && K > 80;
+        if (code === "K" || code === "L") return crossDown(Kp, Dp, K, D) && K > 80;
+        if (code === "M" || code === "N") return Kp < 20 && K >= 20;
+        if (code === "O" || code === "P") return Kp > 80 && K <= 80;
         return false;
       };
       const chosen = chooseSideByConditions(ind, check, check);
@@ -550,12 +544,12 @@ function analyzeIndicator(candlesInput, indicator = {}, options = {}) {
     else if (Wp > -20 && W <= -20) { side = "SELL"; score = 80; reasons.push("Williams %R вышел из зоны выше -20 вниз."); }
     if (hasCustomConditions(ind)) {
       const check = code => {
-        if (code === "A") return Wp < -80 && W >= -80;
-        if (code === "B") return Wp > -80 && W <= -80;
-        if (code === "C") return Wp < -50 && W >= -50;
-        if (code === "D") return Wp > -50 && W <= -50;
-        if (code === "E") return Wp < -20 && W >= -20;
-        if (code === "F") return Wp > -20 && W <= -20;
+        if (code === "A" || code === "B") return Wp < -80 && W >= -80;
+        if (code === "C" || code === "D") return Wp > -80 && W <= -80;
+        if (code === "E" || code === "F") return Wp < -50 && W >= -50;
+        if (code === "G" || code === "H") return Wp > -50 && W <= -50;
+        if (code === "I" || code === "J") return Wp < -20 && W >= -20;
+        if (code === "K" || code === "L") return Wp > -20 && W <= -20;
         return false;
       };
       const chosen = chooseSideByConditions(ind, check, check);
@@ -574,10 +568,10 @@ function analyzeIndicator(candlesInput, indicator = {}, options = {}) {
     else if (S < Sp && S > 50) { side = "SELL"; score = 58; reasons.push("STC падает после верхней зоны."); }
     if (hasCustomConditions(ind)) {
       const check = code => {
-        if (code === "A") return Sp < 20 && S >= 20;
-        if (code === "B") return Sp > 20 && S <= 20;
-        if (code === "C") return Sp < 80 && S >= 80;
-        if (code === "D") return Sp > 80 && S <= 80;
+        if (code === "A" || code === "B") return Sp < 20 && S >= 20;
+        if (code === "C" || code === "D") return Sp > 20 && S <= 20;
+        if (code === "E" || code === "F") return Sp < 80 && S >= 80;
+        if (code === "G" || code === "H") return Sp > 80 && S <= 80;
         return false;
       };
       const chosen = chooseSideByConditions(ind, check, check);
@@ -595,12 +589,12 @@ function analyzeIndicator(candlesInput, indicator = {}, options = {}) {
     else if (crossDown(Lp, Tp, L, T)) { side = "SELL"; score = 62; reasons.push("Lips пересекла Teeth вниз: ранний сигнал."); }
     if (hasCustomConditions(ind)) {
       const check = code => {
-        if (code === "A") return crossUp(Lp, Tp, L, T) && L > J && T > J;
-        if (code === "B") return crossDown(Lp, Tp, L, T) && L < J && T < J;
-        if (code === "C") return L > T && T > J && L > Lp;
-        if (code === "D") return L < T && T < J && L < Lp;
-        if (code === "E") return crossUp(Lp, Tp, L, T);
-        if (code === "F") return crossDown(Lp, Tp, L, T);
+        if (code === "A" || code === "B") return crossUp(Lp, Tp, L, T) && L > J && T > J;
+        if (code === "C" || code === "D") return crossDown(Lp, Tp, L, T) && L < J && T < J;
+        if (code === "E" || code === "F") return L > T && T > J && L > Lp;
+        if (code === "G" || code === "H") return L < T && T < J && L < Lp;
+        if (code === "I" || code === "J") return crossUp(Lp, Tp, L, T);
+        if (code === "K" || code === "L") return crossDown(Lp, Tp, L, T);
         return false;
       };
       const chosen = chooseSideByConditions(ind, check, check);
@@ -615,12 +609,12 @@ function analyzeIndicator(candlesInput, indicator = {}, options = {}) {
     else if (A.down > A.up && A.down > 70) { side = "SELL"; score = crossUp(Ap.down, Ap.up, A.down, A.up) ? 84 : 66; reasons.push("Aroon Down выше Aroon Up и выше 70."); }
     if (hasCustomConditions(ind)) {
       const check = code => {
-        if (code === "A") return crossUp(Ap.up, Ap.down, A.up, A.down);
-        if (code === "B") return crossDown(Ap.up, Ap.down, A.up, A.down);
-        if (code === "C") return Ap.up < 50 && A.up >= 50;
-        if (code === "D") return Ap.up > 50 && A.up <= 50;
-        if (code === "E") return Ap.down < 50 && A.down >= 50;
-        if (code === "F") return Ap.down > 50 && A.down <= 50;
+        if (code === "A" || code === "B") return crossUp(Ap.up, Ap.down, A.up, A.down);
+        if (code === "C" || code === "D") return crossDown(Ap.up, Ap.down, A.up, A.down);
+        if (code === "E" || code === "F") return Ap.up < 50 && A.up >= 50;
+        if (code === "G" || code === "H") return Ap.up > 50 && A.up <= 50;
+        if (code === "I" || code === "J") return Ap.down < 50 && A.down >= 50;
+        if (code === "K" || code === "L") return Ap.down > 50 && A.down <= 50;
         return false;
       };
       const chosen = chooseSideByConditions(ind, check, check);
@@ -642,10 +636,10 @@ function analyzeIndicator(candlesInput, indicator = {}, options = {}) {
       const tenkanP = (highest(highs.slice(i2 + 1 - 9, i2 + 1)) + lowest(lows.slice(i2 + 1 - 9, i2 + 1))) / 2;
       const kijunP = (highest(highs.slice(i2 + 1 - 26, i2 + 1)) + lowest(lows.slice(i2 + 1 - 26, i2 + 1))) / 2;
       const check = code => {
-        if (code === "A") return crossUp(tenkanP, kijunP, tenkan, kijun);
-        if (code === "B") return crossDown(tenkanP, kijunP, tenkan, kijun);
-        if (code === "C") return c > top && tenkan > kijun;
-        if (code === "D") return c < bottom && tenkan < kijun;
+        if (code === "A" || code === "B") return crossUp(tenkanP, kijunP, tenkan, kijun);
+        if (code === "C" || code === "D") return crossDown(tenkanP, kijunP, tenkan, kijun);
+        if (code === "E" || code === "F") return c > top && tenkan > kijun;
+        if (code === "G" || code === "H") return c < bottom && tenkan < kijun;
         return false;
       };
       const chosen = chooseSideByConditions(ind, check, check);
@@ -663,10 +657,10 @@ function analyzeIndicator(candlesInput, indicator = {}, options = {}) {
     else if (c < S) { side = "SELL"; score = 58; reasons.push("Цена ниже Parabolic SAR."); }
     if (hasCustomConditions(ind)) {
       const check = code => {
-        if (code === "A") return cp < Sp && c > S;   // SAR flipped below price
-        if (code === "B") return cp > Sp && c < S;   // SAR flipped above price
-        if (code === "C") return c > S;              // SAR below price
-        if (code === "D") return c < S;              // SAR above price
+        if (code === "A" || code === "B") return cp < Sp && c > S;   // SAR flipped below price
+        if (code === "C" || code === "D") return cp > Sp && c < S;   // SAR flipped above price
+        if (code === "E" || code === "F") return c > S;              // SAR below price
+        if (code === "G" || code === "H") return c < S;              // SAR above price
         return false;
       };
       const chosen = chooseSideByConditions(ind, check, check);
@@ -684,10 +678,10 @@ function analyzeIndicator(candlesInput, indicator = {}, options = {}) {
     else if (S.dir === -1) { side = "SELL"; score = 60; reasons.push("SuperTrend над ценой: тренд вниз."); }
     if (hasCustomConditions(ind)) {
       const check = code => {
-        if (code === "A") return S.dir === 1 && Sp.dir === -1;  // just turned up
-        if (code === "B") return S.dir === -1 && Sp.dir === 1;  // just turned down
-        if (code === "C") return S.dir === 1;                   // currently up
-        if (code === "D") return S.dir === -1;                  // currently down
+        if (code === "A" || code === "B") return S.dir === 1 && Sp.dir === -1;  // just turned up
+        if (code === "C" || code === "D") return S.dir === -1 && Sp.dir === 1;  // just turned down
+        if (code === "E" || code === "F") return S.dir === 1;                   // currently up
+        if (code === "G" || code === "H") return S.dir === -1;                  // currently down
         return false;
       };
       const chosen = chooseSideByConditions(ind, check, check);
@@ -702,8 +696,8 @@ function analyzeIndicator(candlesInput, indicator = {}, options = {}) {
     else if (V.minus > V.plus) { side = "SELL"; score = crossUp(Vp.minus, Vp.plus, V.minus, V.plus) ? 82 : 62; reasons.push("-VI выше +VI."); }
     if (hasCustomConditions(ind)) {
       const check = code => {
-        if (code === "A") return crossUp(Vp.plus, Vp.minus, V.plus, V.minus);
-        if (code === "B") return crossDown(Vp.plus, Vp.minus, V.plus, V.minus);
+        if (code === "A" || code === "B") return crossUp(Vp.plus, Vp.minus, V.plus, V.minus);
+        if (code === "C" || code === "D") return crossDown(Vp.plus, Vp.minus, V.plus, V.minus);
         return false;
       };
       const chosen = chooseSideByConditions(ind, check, check);
@@ -719,8 +713,8 @@ function analyzeIndicator(candlesInput, indicator = {}, options = {}) {
     else if (c < recentLow) { side = "SELL"; score = 68; reasons.push("Цена пробила последний значимый минимум ZigZag."); }
     if (hasCustomConditions(ind)) {
       const check = code => {
-        if (code === "A") return c > recentHigh;
-        if (code === "B") return c < recentLow;
+        if (code === "A" || code === "B") return c > recentHigh;
+        if (code === "C" || code === "D") return c < recentLow;
         return false;
       };
       const chosen = chooseSideByConditions(ind, check, check);
@@ -735,10 +729,10 @@ function analyzeIndicator(candlesInput, indicator = {}, options = {}) {
     else if (A > avgAtr && A > Ap && c < cp) { side = "SELL"; score = 56; reasons.push("ATR растёт, последняя свеча вниз: импульс продажи."); }
     if (hasCustomConditions(ind)) {
       const check = code => {
-        if (code === "A") return A > Ap && c > cp;   // rising ATR, bullish candle
-        if (code === "B") return A > Ap && c < cp;   // rising ATR, bearish candle
-        if (code === "C") return A < Ap && c > cp;   // falling ATR, bullish candle
-        if (code === "D") return A < Ap && c < cp;   // falling ATR, bearish candle
+        if (code === "A" || code === "B") return A > Ap && c > cp;   // rising ATR, bullish candle
+        if (code === "C" || code === "D") return A > Ap && c < cp;   // rising ATR, bearish candle
+        if (code === "E" || code === "F") return A < Ap && c > cp;   // falling ATR, bullish candle
+        if (code === "G" || code === "H") return A < Ap && c < cp;   // falling ATR, bearish candle
         return false;
       };
       const chosen = chooseSideByConditions(ind, check, check);
@@ -767,19 +761,19 @@ function analyzeIndicator(candlesInput, indicator = {}, options = {}) {
     }
     if (hasCustomConditions(ind)) {
       const checkBB = code => {
-        if (code === "A") return cp < L && c > L;        // price crosses lower up (bounce)
-        if (code === "B") return cp > L && c < L;        // price crosses lower down (breakdown)
-        if (code === "C") return cp < M && c > M;        // price crosses middle up
-        if (code === "D") return cp > M && c < M;        // price crosses middle down
-        if (code === "E") return cp < U && c > U;        // price crosses upper up (breakout)
-        if (code === "F") return cp > U && c < U;        // price crosses upper down (rejection)
+        if (code === "A" || code === "B") return cp < L && c > L;        // price crosses lower up (bounce)
+        if (code === "C" || code === "D") return cp > L && c < L;        // price crosses lower down (breakdown)
+        if (code === "E" || code === "F") return cp < M && c > M;        // price crosses middle up
+        if (code === "G" || code === "H") return cp > M && c < M;        // price crosses middle down
+        if (code === "I" || code === "J") return cp < U && c > U;        // price crosses upper up (breakout)
+        if (code === "K" || code === "L") return cp > U && c < U;        // price crosses upper down (rejection)
         return false;
       };
       const checkBBW = code => {
-        if (code === "A") return W > Wp && c > cp;       // width growing, bullish
-        if (code === "B") return W > Wp && c < cp;       // width growing, bearish
-        if (code === "C") return W < Wp && c > cp;       // width shrinking, bullish
-        if (code === "D") return W < Wp && c < cp;       // width shrinking, bearish
+        if (code === "A" || code === "B") return W > Wp && c > cp;       // width growing, bullish
+        if (code === "C" || code === "D") return W > Wp && c < cp;       // width growing, bearish
+        if (code === "E" || code === "F") return W < Wp && c > cp;       // width shrinking, bullish
+        if (code === "G" || code === "H") return W < Wp && c < cp;       // width shrinking, bearish
         return false;
       };
       const checkFn = id === "bollinger-bands" ? checkBB : checkBBW;
@@ -797,10 +791,10 @@ function analyzeIndicator(candlesInput, indicator = {}, options = {}) {
     if (hasCustomConditions(ind)) {
       const prevC = closes[closes.length - 2];
       const check = code => {
-        if (code === "A") return c > U;                // breakout above upper
-        if (code === "B") return c < L;                // breakout below lower
-        if (code === "C") return prevC > U && c < U;   // rejection from upper
-        if (code === "D") return prevC < L && c > L;   // bounce from lower
+        if (code === "A" || code === "B") return c > U;                // breakout above upper
+        if (code === "C" || code === "D") return c < L;                // breakout below lower
+        if (code === "E" || code === "F") return prevC > U && c < U;   // rejection from upper
+        if (code === "G" || code === "H") return prevC < L && c > L;   // bounce from lower
         return false;
       };
       const chosen = chooseSideByConditions(ind, check, check);
@@ -816,12 +810,12 @@ function analyzeIndicator(candlesInput, indicator = {}, options = {}) {
     else if (cp > Up && c < U) { side = "SELL"; score = 76; reasons.push("Цена вернулась внутрь канала Envelopes от верхней границы."); }
     if (hasCustomConditions(ind)) {
       const check = code => {
-        if (code === "A") return cp < L && c > L;
-        if (code === "B") return cp > L && c < L;
-        if (code === "C") return cp < M && c > M;
-        if (code === "D") return cp > M && c < M;
-        if (code === "E") return cp < U && c > U;
-        if (code === "F") return cp > U && c < U;
+        if (code === "A" || code === "B") return cp < L && c > L;
+        if (code === "C" || code === "D") return cp > L && c < L;
+        if (code === "E" || code === "F") return cp < M && c > M;
+        if (code === "G" || code === "H") return cp > M && c < M;
+        if (code === "I" || code === "J") return cp < U && c > U;
+        if (code === "K" || code === "L") return cp > U && c < U;
         return false;
       };
       const chosen = chooseSideByConditions(ind, check, check);
@@ -840,12 +834,12 @@ function analyzeIndicator(candlesInput, indicator = {}, options = {}) {
     else if (c < L) { side = "SELL"; score = 58; reasons.push("Цена ниже нижнего Keltner: импульс вниз."); }
     if (hasCustomConditions(ind)) {
       const check = code => {
-        if (code === "A") return cp < L && c > L;
-        if (code === "B") return cp > L && c < L;
-        if (code === "C") return cp < M && c > M;
-        if (code === "D") return cp > M && c < M;
-        if (code === "E") return cp < U && c > U;
-        if (code === "F") return cp > U && c < U;
+        if (code === "A" || code === "B") return cp < L && c > L;
+        if (code === "C" || code === "D") return cp > L && c < L;
+        if (code === "E" || code === "F") return cp < M && c > M;
+        if (code === "G" || code === "H") return cp > M && c < M;
+        if (code === "I" || code === "J") return cp < U && c > U;
+        if (code === "K" || code === "L") return cp > U && c < U;
         return false;
       };
       const chosen = chooseSideByConditions(ind, check, check);
@@ -870,17 +864,17 @@ function analyzeIndicator(candlesInput, indicator = {}, options = {}) {
     if (hasCustomConditions(ind)) {
       const check = code => {
         if (id === "awesome-oscillator") {
-          if (code === "A") return Vp <= 0 && V > 0;    // crosses zero up
-          if (code === "B") return Vp >= 0 && V < 0;    // crosses zero down
-          if (code === "C") return V > 0 && V > Vp;     // green bar above zero
-          if (code === "D") return V > 0 && V < Vp;     // red bar above zero
-          if (code === "E") return V < 0 && V > Vp;     // green bar below zero
-          if (code === "F") return V < 0 && V < Vp;     // red bar below zero
+          if (code === "A" || code === "B") return Vp <= 0 && V > 0;    // crosses zero up
+          if (code === "C" || code === "D") return Vp >= 0 && V < 0;    // crosses zero down
+          if (code === "E" || code === "F") return V > 0 && V > Vp;     // green bar above zero
+          if (code === "G" || code === "H") return V > 0 && V < Vp;     // red bar above zero
+          if (code === "I" || code === "J") return V < 0 && V > Vp;     // green bar below zero
+          if (code === "K" || code === "L") return V < 0 && V < Vp;     // red bar below zero
         } else {
-          if (code === "A") return Vp <= 0 && V > 0;
-          if (code === "B") return Vp >= 0 && V < 0;
-          if (code === "C") return V > Vp;               // bar turned green
-          if (code === "D") return V < Vp;               // bar turned red
+          if (code === "A" || code === "B") return Vp <= 0 && V > 0;
+          if (code === "C" || code === "D") return Vp >= 0 && V < 0;
+          if (code === "E" || code === "F") return V > Vp;               // bar turned green
+          if (code === "G" || code === "H") return V < Vp;               // bar turned red
         }
         return false;
       };
@@ -899,12 +893,10 @@ function analyzeIndicator(candlesInput, indicator = {}, options = {}) {
     if (hasCustomConditions(ind)) {
       const Ap2 = a.adx[a.adx.length - 2], Pp2 = a.plusDI[a.plusDI.length - 2], Mp2 = a.minusDI[a.minusDI.length - 2];
       const check = code => {
-        if (code === "A") return crossUp(Pp2, Mp2, P, M);              // +DI crosses -DI up
-        if (code === "B") return crossDown(Pp2, Mp2, P, M);             // +DI crosses -DI down
-        if (code === "C") return P > M && Ap2 < 25 && A >= 25;          // +DI>-DI, ADX crosses 25 up
-        if (code === "D") return M > P && Ap2 < 25 && A >= 25;          // -DI>+DI, ADX crosses 25 up
-        if (code === "E") return P > M;                                  // +DI > -DI
-        if (code === "F") return M > P;                                  // -DI > +DI
+        if (code === "A" || code === "B") return crossUp(Pp2, Mp2, P, M);              // +DI crosses -DI up
+        if (code === "C" || code === "D") return crossDown(Pp2, Mp2, P, M);             // +DI crosses -DI down
+        if (code === "E" || code === "F") return P > M && Ap2 < 25 && A >= 25;          // +DI>-DI, ADX crosses 25 up
+        if (code === "G" || code === "H") return M > P && Ap2 < 25 && A >= 25;          // -DI>+DI, ADX crosses 25 up
         return false;
       };
       const chosen = chooseSideByConditions(ind, check, check);
@@ -928,15 +920,15 @@ function analyzeIndicator(candlesInput, indicator = {}, options = {}) {
     if (hasCustomConditions(ind)) {
       const check = code => {
         if (id === "bulls-power") {
-          if (code === "A") return BULL > 0 && BULL > BULLp;          // BP positive and rising
-          if (code === "B") return BULL > 0 && BULL < BULLp;          // BP positive and falling
-          if (code === "C") return BULLp <= 0 && BULL > 0;            // BP crosses zero up
-          if (code === "D") return BULLp >= 0 && BULL < 0;            // BP crosses zero down
+          if (code === "A" || code === "B") return BULL > 0 && BULL > BULLp;          // BP positive and rising
+          if (code === "C" || code === "D") return BULL > 0 && BULL < BULLp;          // BP positive and falling
+          if (code === "E" || code === "F") return BULLp <= 0 && BULL > 0;            // BP crosses zero up
+          if (code === "G" || code === "H") return BULLp >= 0 && BULL < 0;            // BP crosses zero down
         } else {
-          if (code === "A") return BEAR < 0 && BEAR < BEARp;          // BP negative and falling
-          if (code === "B") return BEAR < 0 && BEAR > BEARp;          // BP negative and rising (weakening)
-          if (code === "C") return BEARp <= 0 && BEAR > 0;            // BP crosses zero up
-          if (code === "D") return BEARp >= 0 && BEAR < 0;            // BP crosses zero down
+          if (code === "A" || code === "B") return BEAR < 0 && BEAR < BEARp;          // BP negative and falling
+          if (code === "C" || code === "D") return BEAR < 0 && BEAR > BEARp;          // BP negative and rising (weakening)
+          if (code === "E" || code === "F") return BEARp <= 0 && BEAR > 0;            // BP crosses zero up
+          if (code === "G" || code === "H") return BEARp >= 0 && BEAR < 0;            // BP crosses zero down
         }
         return false;
       };
@@ -971,8 +963,8 @@ function analyzeIndicator(candlesInput, indicator = {}, options = {}) {
     }
     if (hasCustomConditions(ind)) {
       const check = code => {
-        if (code === "A") return downVal !== null;   // down fractal confirmed = BUY
-        if (code === "B") return upVal !== null;     // up fractal confirmed = SELL
+        if (code === "A" || code === "B") return downVal !== null;   // down fractal confirmed
+        if (code === "C" || code === "D") return upVal !== null;     // up fractal confirmed
         return false;
       };
       const chosen = chooseSideByConditions(ind, check, check);
@@ -992,10 +984,10 @@ function analyzeIndicator(candlesInput, indicator = {}, options = {}) {
     if (hasCustomConditions(ind)) {
       const midVal = id === "momentum" ? 100 : 0;
       const check = code => {
-        if (code === "A") return Vp < midVal && V >= midVal;   // crosses mid up
-        if (code === "B") return Vp > midVal && V <= midVal;   // crosses mid down
-        if (code === "C") return V > Vp;                       // current > previous
-        if (code === "D") return V < Vp;                       // current < previous
+        if (code === "A" || code === "B") return Vp <= midVal && V > midVal;   // crosses mid up
+        if (code === "C" || code === "D") return Vp >= midVal && V < midVal;   // crosses mid down
+        if (code === "E" || code === "F") return V > Vp;                       // current > previous
+        if (code === "G" || code === "H") return V < Vp;                       // current < previous
         return false;
       };
       const chosen = chooseSideByConditions(ind, check, check);
