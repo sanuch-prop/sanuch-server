@@ -450,6 +450,18 @@ async function pageUsers() {
   document.getElementById("userFilter").addEventListener("change", filterUsers);
   document.getElementById("refreshUsersBtn").addEventListener("click", pageUsers);
   document.getElementById("createKeyBtn").addEventListener("click", showCreateKeyModal);
+
+  document.getElementById("usersBody").addEventListener("click", async e => {
+    const btn = e.target.closest(".uBtn");
+    if (!btn) return;
+    const action = btn.dataset.action;
+    const pid = btn.dataset.pid;
+    const key = btn.dataset.key;
+    if (action === "activate") await adminActivate(pid);
+    else if (action === "block") await adminBlock(pid);
+    else if (action === "trial") await adminResetTrial(pid);
+    else if (action === "rebind") await adminRebind(key);
+  });
 }
 
 function filterUsers() {
@@ -479,10 +491,10 @@ function renderUsersTable(users) {
       '<td style="color:var(--text3);font-size:12px">' + fmtTime(u.createdAt) + '</td>' +
       '<td style="color:var(--text3);font-size:12px">' + (u.activatedAt ? fmtTime(u.activatedAt) : '<span style="color:var(--text3)">—</span>') + '</td>' +
       '<td><div class="btnGroup">' +
-        (u.status !== "active" ? '<button class="btn success sm" onclick="adminActivate(\'' + esc(u.platformId) + '\')">Активировать</button>' : '') +
-        (u.status !== "blocked" ? '<button class="btn danger sm" onclick="adminBlock(\'' + esc(u.platformId) + '\')">Блок</button>' : '<button class="btn sm" onclick="adminActivate(\'' + esc(u.platformId) + '\')">Разблокировать</button>') +
-        '<button class="btn sm" onclick="adminResetTrial(\'' + esc(u.platformId) + '\')">Сброс триала</button>' +
-        (u.licenseKey ? '<button class="btn sm" onclick="adminRebind(\'' + esc(u.licenseKey) + '\')">Сброс привязки</button>' : '') +
+        (u.status !== "active" ? '<button class="btn success sm uBtn" data-action="activate" data-pid="' + esc(u.platformId) + '">Активировать</button>' : '') +
+        (u.status !== "blocked" ? '<button class="btn danger sm uBtn" data-action="block" data-pid="' + esc(u.platformId) + '">Блок</button>' : '<button class="btn sm uBtn" data-action="activate" data-pid="' + esc(u.platformId) + '">Разблокировать</button>') +
+        '<button class="btn sm uBtn" data-action="trial" data-pid="' + esc(u.platformId) + '">Сброс триала</button>' +
+        (u.licenseKey ? '<button class="btn sm uBtn" data-action="rebind" data-pid="' + esc(u.platformId) + '" data-key="' + esc(u.licenseKey) + '">Сброс привязки</button>' : '') +
       '</div></td>' +
     '</tr>';
   }).join("");
