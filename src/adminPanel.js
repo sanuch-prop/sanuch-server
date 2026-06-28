@@ -159,6 +159,17 @@ input.fi.sm{padding:5px 8px;font-size:12px}
 /* ── Refresh bar ── */
 .refreshBar{display:flex;align-items:center;gap:8px;font-size:12px;color:var(--text3)}
 .refreshBar select.fi{padding:4px 8px;font-size:12px}
+
+/* ── User detail panel ── */
+.userDetailPanel{background:var(--bg2);border:1px solid var(--border);border-radius:var(--radius);margin-top:0;border-top:none;border-radius:0 0 var(--radius) var(--radius);overflow:hidden}
+.userDetailInner{padding:16px 20px;display:grid;grid-template-columns:1fr 1fr 1fr;gap:16px}
+.udSection h4{font-size:11px;text-transform:uppercase;color:var(--text3);letter-spacing:.05em;margin-bottom:10px;font-weight:600}
+.udRow{display:flex;justify-content:space-between;align-items:center;padding:5px 0;border-bottom:1px solid rgba(255,255,255,.04);font-size:13px}
+.udRow:last-child{border-bottom:none}
+.udLabel{color:var(--text2);font-size:12px}
+.udVal{color:var(--text);font-weight:500;text-align:right;max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.userDetailActions{padding:12px 20px;border-top:1px solid var(--border);display:flex;gap:8px}
+tr.expandedUser td{background:rgba(88,166,255,.04)}
 </style>
 </head>
 <body>
@@ -185,13 +196,10 @@ input.fi.sm{padding:5px 8px;font-size:12px}
     </div>
     <nav id="nav">
       <button class="navItem active" data-page="dashboard"><span class="navIcon">◉</span> Дашборд</button>
-      <button class="navItem" data-page="users"><span class="navIcon">👤</span> Пользователи</button>
-      <button class="navItem" data-page="trades"><span class="navIcon">📊</span> Сделки</button>
-      <button class="navItem" data-page="engine"><span class="navIcon">⚙</span> Торговый движок</button>
+      <button class="navItem" data-page="users"><span class="navIcon">👥</span> Пользователи</button>
       <button class="navItem" data-page="flow"><span class="navIcon">⟳</span> Потоки данных</button>
       <button class="navItem" data-page="server"><span class="navIcon">🖥</span> Сервер</button>
       <button class="navItem" data-page="extensions"><span class="navIcon">🧩</span> Расширения</button>
-      <button class="navItem" data-page="settings"><span class="navIcon">⚙</span> Настройки</button>
     </nav>
     <div class="sidebarFooter">
       <span class="serverDot" id="sidebarDot"></span>
@@ -332,12 +340,9 @@ function renderPage(page) {
   const pages = {
     dashboard:  pageDashboard,
     users:      pageUsers,
-    trades:     pageTrades,
-    engine:     pageEngine,
     flow:       pageFlow,
     server:     pageServer,
     extensions: pageExtensions,
-    settings:   pageSettings,
   };
   (pages[page] || pageDashboard)();
 }
@@ -372,15 +377,12 @@ async function pageDashboard() {
 
   document.getElementById("dashBody").innerHTML =
     '<div class="statsRow">' +
-    stat("Пользователи", m.users?.total, "Всего зарегистрировано", "blue") +
     stat("Активных лицензий", m.users?.active, "Оплатили доступ", "green") +
-    stat("Триал", m.users?.trial, "Тестируют", "yellow") +
-    stat("Заблокировано", m.users?.blocked, "", "red") +
-    stat("Сделок сегодня", m.trades?.today, "Всего: " + (m.trades?.total || 0), "blue") +
-    stat("WinRate", (m.trades?.winRate || 0) + "%", "Сегодня: " + (m.trades?.wins || 0) + "W / " + (m.trades?.losses || 0) + "L", m.trades?.winRate >= 60 ? "green" : m.trades?.winRate >= 50 ? "yellow" : "red") +
-    stat("Активов (тики)", m.engine?.tickSymbols, "Получают котировки", "purple") +
-    stat("RAM", (m.server?.memMB || 0) + " MB", "Heap used", "") +
-    stat("Расширений онлайн", m.extensions?.online, "Всего видели: " + (m.extensions?.total || 0), "green") +
+    stat("Триал", m.users?.trial, "Тестируют бесплатно", "yellow") +
+    stat("Расширений онлайн", m.extensions?.online, "Всего видели: " + (m.extensions?.total || 0), "blue") +
+    stat("Сделок сегодня", m.trades?.today, "W:" + (m.trades?.wins || 0) + " / L:" + (m.trades?.losses || 0), "purple") +
+    stat("WinRate сегодня", (m.trades?.winRate || 0) + "%", "Всего сделок: " + (m.trades?.total || 0), m.trades?.winRate >= 60 ? "green" : m.trades?.winRate >= 50 ? "yellow" : "red") +
+    stat("Память сервера", (m.server?.memMB || 0) + " MB", "Uptime: " + upStr, "") +
     '</div>' +
 
     '<div class="panelGrid">' +
@@ -388,23 +390,20 @@ async function pageDashboard() {
     '<div class="panel"><div class="panelHeader"><h2>🖥 Сервер</h2></div><div class="panelBody">' +
     statusLine("Статус", '<span class="badge green">● Работает</span>') +
     statusLine("Версия", esc(m.server?.version || "?")) +
-    statusLine("Порт", esc(m.server?.port || "?")) +
     statusLine("Uptime", upStr) +
     statusLine("Память", (m.server?.memMB || 0) + " MB heap") +
     '</div></div>' +
 
-    '<div class="panel"><div class="panelHeader"><h2>⚙ Торговый движок</h2></div><div class="panelBody">' +
-    statusLine("Состояние", m.engine?.enabled ? '<span class="badge green">▶ Работает</span>' : '<span class="badge gray">⏹ Остановлен</span>') +
-    statusLine("Индикаторов", esc(m.engine?.indicators)) +
-    statusLine("Символов с тиками", esc(m.engine?.tickSymbols)) +
-    statusLine("Последний тик", fmtTime(m.engine?.lastTickAt)) +
+    '<div class="panel"><div class="panelHeader"><h2>👥 Пользователи</h2></div><div class="panelBody">' +
+    statusLine("Активных (лицензия)", '<span class="badge green">' + (m.users?.active || 0) + '</span>') +
+    statusLine("Пробный период", '<span class="badge blue">' + (m.users?.trial || 0) + '</span>') +
+    statusLine("Заблокировано", '<span class="badge red">' + (m.users?.blocked || 0) + '</span>') +
+    statusLine("Всего зарегистрировано", esc(m.users?.total)) +
     '</div></div>' +
 
-    '<div class="panel"><div class="panelHeader"><h2>👤 Пользователи</h2></div><div class="panelBody">' +
-    statusLine("Активных", '<span class="badge green">' + (m.users?.active || 0) + '</span>') +
-    statusLine("Триал", '<span class="badge blue">' + (m.users?.trial || 0) + '</span>') +
-    statusLine("Заблокировано", '<span class="badge red">' + (m.users?.blocked || 0) + '</span>') +
-    statusLine("Всего", esc(m.users?.total)) +
+    '<div class="panel"><div class="panelHeader"><h2>🧩 Расширения</h2></div><div class="panelBody">' +
+    statusLine("Онлайн сейчас", '<span class="badge green">' + (m.extensions?.online || 0) + '</span>') +
+    statusLine("Всего видели", esc(m.extensions?.total || 0)) +
     '</div></div>' +
 
     '<div class="panel"><div class="panelHeader"><h2>📊 Торговля сегодня</h2></div><div class="panelBody">' +
@@ -453,14 +452,62 @@ async function pageUsers() {
 
   document.getElementById("usersBody").addEventListener("click", async e => {
     const btn = e.target.closest(".uBtn");
-    if (!btn) return;
-    const action = btn.dataset.action;
-    const pid = btn.dataset.pid;
-    const key = btn.dataset.key;
-    if (action === "activate") await adminActivate(pid);
-    else if (action === "block") await adminBlock(pid);
-    else if (action === "trial") await adminResetTrial(pid);
-    else if (action === "rebind") await adminRebind(key);
+    if (btn) {
+      const action = btn.dataset.action;
+      const pid = btn.dataset.pid;
+      const key = btn.dataset.key;
+      if (action === "activate") await adminActivate(pid);
+      else if (action === "block") await adminBlock(pid);
+      else if (action === "trial") await adminResetTrial(pid);
+      else if (action === "rebind") await adminRebind(key);
+      return;
+    }
+    const row = e.target.closest("tr[data-pid]");
+    if (!row) return;
+    const pid = row.dataset.pid;
+    const existing = document.getElementById("userDetail_" + CSS.escape(pid));
+    if (existing) { existing.remove(); row.classList.remove("expandedUser"); return; }
+    document.querySelectorAll(".userDetailRow").forEach(r => r.remove());
+    document.querySelectorAll("tr.expandedUser").forEach(r => r.classList.remove("expandedUser"));
+    row.classList.add("expandedUser");
+    const u = _usersData.find(x => x.platformId === pid);
+    if (!u) return;
+    const cols = row.cells.length;
+    const detailRow = document.createElement("tr");
+    detailRow.className = "userDetailRow";
+    detailRow.id = "userDetail_" + pid;
+    const exts = await api("/admin/extensions").catch(() => null);
+    const ext = (exts?.extensions || []).find(x => x.platformId === pid);
+    detailRow.innerHTML =
+      '<td colspan="' + cols + '" style="padding:0">' +
+      '<div class="userDetailPanel">' +
+      '<div class="userDetailInner">' +
+      '<div class="udSection"><h4>Идентификация</h4>' +
+      '<div class="udRow"><span class="udLabel">Platform ID</span><span class="udVal" style="font-family:monospace;font-size:11px">' + esc(u.platformId) + '</span></div>' +
+      '<div class="udRow"><span class="udLabel">Лицензионный ключ</span><span class="udVal" style="font-family:monospace">' + esc(u.licenseKey || "не выдан") + '</span></div>' +
+      '<div class="udRow"><span class="udLabel">Статус</span><span class="udVal">' + statusBadge(u.status) + '</span></div>' +
+      '<div class="udRow"><span class="udLabel">Зарегистрирован</span><span class="udVal">' + fmtTime(u.createdAt) + '</span></div>' +
+      '<div class="udRow"><span class="udLabel">Активирован</span><span class="udVal">' + fmtTime(u.activatedAt) + '</span></div>' +
+      '</div>' +
+      '<div class="udSection"><h4>Активность</h4>' +
+      '<div class="udRow"><span class="udLabel">Расширение</span><span class="udVal">' + (ext ? (ext.online ? '<span class="badge green">● Онлайн</span>' : '<span class="badge gray">Офлайн</span>') : '<span class="badge gray">Не видели</span>') + '</span></div>' +
+      (ext ? '<div class="udRow"><span class="udLabel">Последний ping</span><span class="udVal">' + (ext.agoSec < 60 ? ext.agoSec + "с назад" : Math.floor(ext.agoSec / 60) + "м назад") + '</span></div>' : '') +
+      (ext ? '<div class="udRow"><span class="udLabel">Версия</span><span class="udVal">' + esc(ext.version || "?") + '</span></div>' : '') +
+      (ext ? '<div class="udRow"><span class="udLabel">Браузер</span><span class="udVal">' + esc(ext.browser || "?") + '</span></div>' : '') +
+      '<div class="udRow"><span class="udLabel">Сделок (триал)</span><span class="udVal">' + esc(u.tradesUsed || 0) + (u.status === "trial" ? " / 100" : "") + '</span></div>' +
+      '</div>' +
+      '<div class="udSection"><h4>Управление</h4>' +
+      '<div style="display:flex;flex-direction:column;gap:8px;margin-top:4px">' +
+      (u.status !== "active" ? '<button class="btn success uBtn" data-action="activate" data-pid="' + esc(u.platformId) + '">Активировать</button>' : '') +
+      (u.status === "active" ? '<button class="btn sm uBtn" data-action="trial" data-pid="' + esc(u.platformId) + '">Сбросить сделки</button>' : '') +
+      (u.status !== "blocked" ? '<button class="btn danger uBtn" data-action="block" data-pid="' + esc(u.platformId) + '">Заблокировать</button>' : '<button class="btn success uBtn" data-action="activate" data-pid="' + esc(u.platformId) + '">Разблокировать</button>') +
+      (u.licenseKey ? '<button class="btn sm uBtn" data-action="rebind" data-pid="' + esc(u.platformId) + '" data-key="' + esc(u.licenseKey) + '">Сброс привязки ключа</button>' : '') +
+      '</div>' +
+      '</div>' +
+      '</div>' +
+      '</div>' +
+      '</td>';
+    row.after(detailRow);
   });
 }
 
@@ -527,132 +574,6 @@ async function showCreateKeyModal() {
     toast("Ключ создан: " + (r.status?.licenseKey || "OK"));
     pageUsers();
   } else toast("Ошибка создания ключа", "err");
-}
-
-// ── TRADES ──────────────────────────────────────
-async function pageTrades() {
-  setContent('<div class="pageHeader"><h1>Сделки</h1><p>История торговли с фильтрами</p></div><div class="pageBody"><div id="tradesBody">Загрузка...</div></div>');
-  const data = await api("/auto/history?limit=500").catch(() => null);
-  if (!data?.ok) { document.getElementById("tradesBody").innerHTML = '<div class="empty">Ошибка загрузки</div>'; return; }
-  const trades = data.trades || [];
-  const stats = data.stats || {};
-  const indStats = data.indicatorStats || {};
-
-  const today = new Date().toISOString().slice(0, 10);
-
-  document.getElementById("tradesBody").innerHTML =
-    '<div class="statsRow">' +
-    stat("Всего сделок", stats.total || 0, "", "blue") +
-    stat("Побед", stats.wins || 0, "", "green") +
-    stat("Проигрышей", stats.losses || 0, "", "red") +
-    stat("WinRate", stats.total ? Math.round((stats.wins || 0) / stats.total * 100) + "%" : "—", "", (stats.wins / (stats.total || 1)) >= 0.6 ? "green" : "yellow") +
-    '</div>' +
-
-    '<div class="panel"><div class="panelHeader"><h2>Последние сделки</h2>' +
-    '<div class="formRow" style="margin:0;gap:8px">' +
-    '<select class="fi sm" id="trFilter"><option value="">Все</option><option value="WIN">WIN</option><option value="LOSS">LOSS</option><option value="DRAW">DRAW</option></select>' +
-    '<input class="fi sm" id="trSymbol" placeholder="Актив..." style="width:110px">' +
-    '<button class="btn sm" id="refreshTradesBtn">↺</button>' +
-    '</div></div>' +
-    '<div class="tableWrap"><table><thead><tr><th>Время</th><th>Пара</th><th>Тип</th><th>Сумма</th><th>Результат</th><th>P/L</th><th>Payout</th><th>Источник</th></tr></thead>' +
-    '<tbody id="tradesTbody"></tbody></table></div></div>';
-
-  let _trades = trades;
-  function renderTrades() {
-    const f = document.getElementById("trFilter")?.value || "";
-    const s = (document.getElementById("trSymbol")?.value || "").toUpperCase();
-    const filtered = _trades.filter(t => (!f || t.result === f) && (!s || (t.symbol || "").toUpperCase().includes(s)));
-    const tbody = document.getElementById("tradesTbody");
-    if (!tbody) return;
-    if (!filtered.length) { tbody.innerHTML = '<tr><td colspan="8" class="empty">Нет сделок</td></tr>'; return; }
-    tbody.innerHTML = filtered.slice(0, 200).map(t =>
-      '<tr>' +
-      '<td style="color:var(--text3);font-size:12px;white-space:nowrap">' + fmtTime(t.closedAt || t.openedAt) + '</td>' +
-      '<td><b>' + esc(t.symbol || "?") + '</b></td>' +
-      '<td>' + (t.action === "CALL" ? '<span style="color:var(--green)">▲ CALL</span>' : '<span style="color:var(--red)">▼ PUT</span>') + '</td>' +
-      '<td>$' + esc(t.amount || 0) + '</td>' +
-      '<td>' + resultBadge(t.result) + '</td>' +
-      '<td style="' + (t.pnl > 0 ? 'color:var(--green)' : t.pnl < 0 ? 'color:var(--red)' : '') + '">' + (t.pnl != null ? (t.pnl > 0 ? '+' : '') + '$' + Number(t.pnl).toFixed(2) : '—') + '</td>' +
-      '<td>' + esc(t.payoutPercent ? t.payoutPercent + "%" : "—") + '</td>' +
-      '<td style="color:var(--text3);font-size:11px">' + esc(t.source || t.meta?.source || "—") + '</td>' +
-      '</tr>'
-    ).join("");
-  }
-  renderTrades();
-  document.getElementById("trFilter")?.addEventListener("change", renderTrades);
-  document.getElementById("trSymbol")?.addEventListener("input", renderTrades);
-  document.getElementById("refreshTradesBtn")?.addEventListener("click", pageTrades);
-}
-
-// ── ENGINE ──────────────────────────────────────
-async function pageEngine() {
-  setContent('<div class="pageHeader"><h1>Торговый движок</h1><p>Состояние SignalRunner, индикаторов и тиков</p></div><div class="pageBody"><div id="engineBody">Загрузка...</div></div>');
-  const [state, bridge] = await Promise.all([
-    api("/auto/status").catch(() => null),
-    api("/bridge/status").catch(() => null)
-  ]);
-  const cfg = state?.config || {};
-  const indicators = cfg.indicators || [];
-
-  document.getElementById("engineBody").innerHTML =
-    '<div class="panelGrid">' +
-
-    '<div class="panel"><div class="panelHeader"><h2>SignalRunner</h2></div><div class="panelBody">' +
-    statusLine("Состояние", cfg.enabled ? '<span class="badge green">▶ Запущен</span>' : '<span class="badge gray">⏹ Остановлен</span>') +
-    statusLine("Режим счёта", esc(cfg.accountMode || "—")) +
-    statusLine("Таймфрейм", esc(cfg.timeframe || "—")) +
-    statusLine("Экспирация", esc(cfg.expirySec ? cfg.expirySec + "с" : "—")) +
-    statusLine("Сумма сделки", esc(cfg.amount ? "$" + cfg.amount : "—")) +
-    statusLine("Cooldown", esc(cfg.cooldownMs ? cfg.cooldownMs + "мс" : "—")) +
-    statusLine("Мин. выплата", esc(cfg.minPayoutPercent ? cfg.minPayoutPercent + "%" : "—")) +
-    statusLine("Мартингейл", cfg.martingaleEnabled ? '<span class="badge yellow">Включён × ' + (cfg.martingaleMultiplier || 2) + '</span>' : '<span class="badge gray">Выключен</span>') +
-    '</div></div>' +
-
-    '<div class="panel"><div class="panelHeader"><h2>Поток тиков</h2></div><div class="panelBody">' +
-    statusLine("Символов с тиками", esc(bridge?.prices?.total || 0)) +
-    statusLine("Целевых символов", esc(bridge?.targets?.total || 0)) +
-    statusLine("Покрытие", esc(bridge?.targets?.withLatest || 0) + ' / ' + esc(bridge?.targets?.total || 0)) +
-    statusLine("Ключей свечей", esc(bridge?.candles?.keys || 0)) +
-    statusLine("Таймфреймов", esc((bridge?.timeframes || []).join(", ") || "—")) +
-    '</div></div>' +
-
-    '</div>' +
-
-    '<div class="panel"><div class="panelHeader"><h2>Индикаторы в конфиге (' + indicators.length + ')</h2></div>' +
-    (indicators.length
-      ? '<div class="tableWrap"><table><thead><tr><th>ID</th><th>Активы</th><th>Сумма</th><th>Экспирация</th><th>SL</th><th>TP</th></tr></thead><tbody>' +
-        indicators.map(ind =>
-          '<tr>' +
-          '<td><b>' + esc(ind.id || ind.name || "?") + '</b></td>' +
-          '<td style="font-size:11px;color:var(--text2)">' + esc((ind.assets || []).slice(0,5).join(", ") + ((ind.assets || []).length > 5 ? "..." : "") || "все") + '</td>' +
-          '<td>' + esc(ind.settings?.amount ? "$" + ind.settings.amount : cfg.amount ? "$" + cfg.amount : "—") + '</td>' +
-          '<td>' + esc(ind.settings?.expirySec ? ind.settings.expirySec + "с" : cfg.expirySec ? cfg.expirySec + "с" : "—") + '</td>' +
-          '<td>' + esc(ind.settings?.stopLoss ? "$" + ind.settings.stopLoss : "—") + '</td>' +
-          '<td>' + esc(ind.settings?.takeProfit ? "$" + ind.settings.takeProfit : "—") + '</td>' +
-          '</tr>'
-        ).join("") +
-        '</tbody></table></div>'
-      : '<div class="empty">Индикаторы не добавлены</div>') +
-    '</div>' +
-
-    '<div class="panel"><div class="panelHeader"><h2>Активные задачи</h2><button class="btn sm" onclick="pageEngine()">↺</button></div><div id="tasksBox" class="panelBody">Загрузка...</div></div>';
-
-  const tasks = await api("/tasks").catch(() => null);
-  const tb = document.getElementById("tasksBox");
-  if (tb) {
-    const list = tasks?.tasks || [];
-    tb.innerHTML = list.length
-      ? '<div class="tableWrap"><table><thead><tr><th>ID</th><th>Пара</th><th>Тип</th><th>Сумма</th><th>Статус</th><th>Открыта</th></tr></thead><tbody>' +
-        list.slice(0, 50).map(t =>
-          '<tr><td style="font-size:11px;color:var(--text3)">' + esc(String(t.id || "").slice(0,8)) + '…</td>' +
-          '<td><b>' + esc(t.symbol) + '</b></td>' +
-          '<td>' + (t.action === "CALL" ? '<span style="color:var(--green)">▲ CALL</span>' : '<span style="color:var(--red)">▼ PUT</span>') + '</td>' +
-          '<td>$' + esc(t.amount) + '</td>' +
-          '<td>' + badge(t.status || "?", t.status === "PENDING" ? "yellow" : "gray") + '</td>' +
-          '<td style="font-size:12px;color:var(--text3)">' + fmtTime(t.openedAt) + '</td></tr>'
-        ).join("") + '</tbody></table></div>'
-      : '<div class="empty" style="padding:20px">Нет активных задач</div>';
-  }
 }
 
 // ── FLOW ──────────────────────────────────────
@@ -812,46 +733,7 @@ async function pageExtensions() {
     '</div>';
 }
 
-// ── SETTINGS ──────────────────────────────────────
-async function pageSettings() {
-  setContent('<div class="pageHeader"><h1>Настройки</h1><p>Параметры системы, конфигурация торгового движка</p></div><div class="pageBody"><div id="settingsBody">Загрузка...</div></div>');
-  const state = await api("/auto/status").catch(() => null);
-  const cfg = state?.config || {};
 
-  document.getElementById("settingsBody").innerHTML =
-    '<div class="panel"><div class="panelHeader"><h2>Текущие параметры бота</h2><span style="font-size:12px;color:var(--text3)">Только просмотр — изменения через расширение</span></div>' +
-    '<div class="panelBody">' +
-    statusLine("Режим счёта",      esc(cfg.accountMode || "—")) +
-    statusLine("Таймфрейм",        esc(cfg.timeframe || "—")) +
-    statusLine("Экспирация",       esc(cfg.expirySec ? cfg.expirySec + "с" : "—")) +
-    statusLine("Сумма сделки",     esc(cfg.amount ? "$" + cfg.amount : "—")) +
-    statusLine("Cooldown",         esc(cfg.cooldownMs ? cfg.cooldownMs + "мс" : "—")) +
-    statusLine("Мин. выплата",     esc(cfg.minPayoutPercent ? cfg.minPayoutPercent + "%" : "—")) +
-    statusLine("Фильтр выплаты",   cfg.usePayoutFilter ? badge("Включён", "green") : badge("Выключен", "gray")) +
-    statusLine("Мартингейл",       cfg.martingaleEnabled ? badge("Включён ×" + (cfg.martingaleMultiplier || 2), "yellow") : badge("Выключен", "gray")) +
-    statusLine("Шагов мартингейл", esc(cfg.martingaleSteps || "—")) +
-    statusLine("Индикаторов",      esc((cfg.indicators || []).length)) +
-    statusLine("Watchlist",        esc((cfg.watchlist || []).slice(0,5).join(", ") + ((cfg.watchlist || []).length > 5 ? "..." : "") || "все активы")) +
-    '</div></div>' +
-
-    '<div class="panel" style="margin-top:16px"><div class="panelHeader"><h2>Управление сервером</h2></div><div class="panelBody">' +
-    '<p style="color:var(--text2);font-size:13px;margin-bottom:16px">Аварийные действия для администратора</p>' +
-    '<div class="btnGroup">' +
-    '<button class="btn danger" onclick="emergencyStop()">🛑 Аварийная остановка торговли</button>' +
-    '<button class="btn sm" onclick="resetDeposit()">↺ Сбросить разгон депозита</button>' +
-    '</div></div></div>';
-}
-
-async function emergencyStop() {
-  if (!confirm("АВАРИЙНАЯ ОСТАНОВКА: остановить всю торговлю прямо сейчас?")) return;
-  const r = await post("/auto/emergencyStop", {}).catch(() => null);
-  if (r?.ok) toast("Торговля остановлена"); else toast("Ошибка", "err");
-}
-async function resetDeposit() {
-  if (!confirm("Сбросить активный разгон депозита?")) return;
-  const r = await post("/deposits/reset", {}).catch(() => null);
-  if (r?.ok) toast("Разгон сброшен"); else toast("Ошибка", "err");
-}
 
 // ═══════════════════════════════════════════════
 //  UTILS
