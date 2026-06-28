@@ -525,15 +525,17 @@ function analyzeIndicator(candlesInput, indicator = {}, options = {}) {
     else if (K < 20 && K > Kp) { side = "BUY"; score = 60; reasons.push("Stochastic в перепроданности и разворачивается вверх."); }
     else if (K > 80 && K < Kp) { side = "SELL"; score = 60; reasons.push("Stochastic в перекупленности и разворачивается вниз."); }
     if (hasCustomConditions(ind)) {
+      const stOversold = n(getSetting(ind, "oversold", 20), 20);
+      const stOverbought = n(getSetting(ind, "overbought", 80), 80);
       const check = code => {
-        if (code === "A" || code === "B") return crossUp(Kp, Dp, K, D) && K < 20;
-        if (code === "C" || code === "D") return crossDown(Kp, Dp, K, D) && K < 20;
-        if (code === "E" || code === "F") return crossUp(Kp, Dp, K, D) && K >= 20 && K <= 80;
-        if (code === "G" || code === "H") return crossDown(Kp, Dp, K, D) && K >= 20 && K <= 80;
-        if (code === "I" || code === "J") return crossUp(Kp, Dp, K, D) && K > 80;
-        if (code === "K" || code === "L") return crossDown(Kp, Dp, K, D) && K > 80;
-        if (code === "M" || code === "N") return Kp < 20 && K >= 20;
-        if (code === "O" || code === "P") return Kp > 80 && K <= 80;
+        if (code === "A" || code === "B") return crossUp(Kp, Dp, K, D) && K < stOversold;
+        if (code === "C" || code === "D") return crossDown(Kp, Dp, K, D) && K < stOversold;
+        if (code === "E" || code === "F") return crossUp(Kp, Dp, K, D) && K >= stOversold && K <= stOverbought;
+        if (code === "G" || code === "H") return crossDown(Kp, Dp, K, D) && K >= stOversold && K <= stOverbought;
+        if (code === "I" || code === "J") return crossUp(Kp, Dp, K, D) && K > stOverbought;
+        if (code === "K" || code === "L") return crossDown(Kp, Dp, K, D) && K > stOverbought;
+        if (code === "M" || code === "N") return Kp < stOversold && K >= stOversold;
+        if (code === "O" || code === "P") return Kp > stOverbought && K <= stOverbought;
         return false;
       };
       const chosen = chooseSideByConditions(ind, check, check);
@@ -553,13 +555,16 @@ function analyzeIndicator(candlesInput, indicator = {}, options = {}) {
     if (Wp < -80 && W >= -80) { side = "BUY"; score = 80; reasons.push("Williams %R вышел из зоны ниже -80 вверх."); }
     else if (Wp > -20 && W <= -20) { side = "SELL"; score = 80; reasons.push("Williams %R вышел из зоны выше -20 вниз."); }
     if (hasCustomConditions(ind)) {
+      const wLower = n(getSetting(ind, "lowerLevel", -80), -80);
+      const wMid = -50;
+      const wUpper = n(getSetting(ind, "upperLevel", -20), -20);
       const check = code => {
-        if (code === "A" || code === "B") return Wp < -80 && W >= -80;
-        if (code === "C" || code === "D") return Wp > -80 && W <= -80;
-        if (code === "E" || code === "F") return Wp < -50 && W >= -50;
-        if (code === "G" || code === "H") return Wp > -50 && W <= -50;
-        if (code === "I" || code === "J") return Wp < -20 && W >= -20;
-        if (code === "K" || code === "L") return Wp > -20 && W <= -20;
+        if (code === "A" || code === "B") return Wp < wLower && W >= wLower;
+        if (code === "C" || code === "D") return Wp > wLower && W <= wLower;
+        if (code === "E" || code === "F") return Wp < wMid && W >= wMid;
+        if (code === "G" || code === "H") return Wp > wMid && W <= wMid;
+        if (code === "I" || code === "J") return Wp < wUpper && W >= wUpper;
+        if (code === "K" || code === "L") return Wp > wUpper && W <= wUpper;
         return false;
       };
       const chosen = chooseSideByConditions(ind, check, check);
@@ -593,8 +598,14 @@ function analyzeIndicator(candlesInput, indicator = {}, options = {}) {
 
   else if (id === "alligator") {
     const jawP = n(getSetting(ind, "jawPeriod", 13), 13), teethP = n(getSetting(ind, "teethPeriod", 8), 8), lipsP = n(getSetting(ind, "lipsPeriod", 5), 5);
+    const jawShift = n(getSetting(ind, "jawShift", 8), 8), teethShift = n(getSetting(ind, "teethShift", 5), 5), lipsShift = n(getSetting(ind, "lipsShift", 3), 3);
     const jaw = smmaSeries(closes, jawP), teeth = smmaSeries(closes, teethP), lips = smmaSeries(closes, lipsP);
-    const L = last(lips), T = last(teeth), J = last(jaw), Lp = lips[lips.length - 2], Tp = teeth[teeth.length - 2], Jp = jaw[jaw.length - 2];
+    const L = lips[lips.length - 1 - lipsShift] ?? last(lips);
+    const T = teeth[teeth.length - 1 - teethShift] ?? last(teeth);
+    const J = jaw[jaw.length - 1 - jawShift] ?? last(jaw);
+    const Lp = lips[lips.length - 2 - lipsShift] ?? lips[lips.length - 2];
+    const Tp = teeth[teeth.length - 2 - teethShift] ?? teeth[teeth.length - 2];
+    const Jp = jaw[jaw.length - 2 - jawShift] ?? jaw[jaw.length - 2];
     if (L > T && T > J && L > Lp && T >= Tp) { side = "BUY"; score = 78; reasons.push("Lips выше Teeth выше Jaws: раскрытие вверх."); }
     else if (L < T && T < J && L < Lp && T <= Tp) { side = "SELL"; score = 78; reasons.push("Lips ниже Teeth ниже Jaws: раскрытие вниз."); }
     else if (crossUp(Lp, Tp, L, T)) { side = "BUY"; score = 62; reasons.push("Lips пересекла Teeth вверх: ранний сигнал."); }
