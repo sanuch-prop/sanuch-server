@@ -224,7 +224,8 @@ async function api(path, opts = {}) {
     ...opts,
     headers: { "Content-Type": "application/json", "X-Admin-Token": TOKEN, ...(opts.headers || {}) }
   });
-  if (res.status === 403) { logout(); throw new Error("Forbidden"); }
+  if (res.status === 403) throw new Error("FORBIDDEN");
+  if (!res.ok) throw new Error("HTTP_" + res.status);
   return res.json();
 }
 async function post(path, body) { return api(path, { method: "POST", body: JSON.stringify(body) }); }
@@ -268,22 +269,46 @@ function resultBadge(r) {
 // ═══════════════════════════════════════════════
 //  AUTH
 // ═══════════════════════════════════════════════
-document.getElementById("loginBtn").onclick = async () => {
-  const t = document.getElementById("tokenInput").value.trim();
-  if (!t) return;
-  TOKEN = t;
-  const data = await api("/admin/metrics").catch(() => null);
-  if (!data || !data.ok) {
-    document.getElementById("loginErr").textContent = "Неверный токен";
-    TOKEN = "";
-    return;
+async function doLogin(t) {
+  const errEl = document.getElementById("loginErr");
+  const btn   = document.getElementById("loginBtn");
+  errEl.textContent = "Подключение...";
+  btn.disabled = true;
+  try {
+    const res = await fetch(BASE + "/admin/metrics", {
+      headers: { "Content-Type": "application/json", "X-Admin-Token": t }
+    });
+    if (res.status === 403) {
+      errEl.textContent = "Неверный токен (403)";
+      return;
+    }
+    if (!res.ok) {
+      errEl.textContent = "Ошибка сервера: HTTP " + res.status;
+      return;
+    }
+    const data = await res.json();
+    if (!data?.ok) {
+      errEl.textContent = "Сервер вернул ok:false";
+      return;
+    }
+    TOKEN = t;
+    sessionStorage.setItem("admin_token", TOKEN);
+    document.getElementById("loginScreen").style.display = "none";
+    document.getElementById("app").style.display = "flex";
+    errEl.textContent = "";
+    init();
+  } catch(e) {
+    errEl.textContent = "Ошибка: " + e.message;
+  } finally {
+    btn.disabled = false;
   }
-  sessionStorage.setItem("admin_token", TOKEN);
-  document.getElementById("loginScreen").style.display = "none";
-  document.getElementById("app").style.display = "flex";
-  init();
+}
+
+document.getElementById("loginBtn").onclick = () => {
+  const t = document.getElementById("tokenInput").value.trim();
+  if (t) doLogin(t);
 };
-document.getElementById("tokenInput").addEventListener("keydown", e => { if (e.key === "Enter") document.getElementById("loginBtn").click(); });
+document.getElementById("tokenInput").addEventListener("keydown", e => { if (e.key === "Enter") { const t = e.target.value.trim(); if (t) doLogin(t); } });
 
 function logout() {
   sessionStorage.removeItem("admin_token");
@@ -833,13 +858,7 @@ async function init() {
 
 // Auto-login if token already in session
 if (TOKEN) {
-  api("/admin/metrics").then(data => {
-    if (data?.ok) {
-      document.getElementById("loginScreen").style.display = "none";
-      document.getElementById("app").style.display = "flex";
-      init();
-    }
-  }).catch(() => {});
+  doLogin(TOKEN);
 }
 </script>
 </body>
