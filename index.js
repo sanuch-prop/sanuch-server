@@ -1,5 +1,24 @@
 require("dotenv").config();
 const http = require("http");
+const os = require("os");
+
+// ── Ring buffer логов (последние 300 строк) ───────────────────────────────────
+const LOG_BUF = [];
+const LOG_BUF_MAX = 300;
+const _origLog   = console.log.bind(console);
+const _origWarn  = console.warn.bind(console);
+const _origError = console.error.bind(console);
+function _pushLog(level, args) {
+  const line = { t: Date.now(), l: level, m: args.map(a => (typeof a === "string" ? a : JSON.stringify(a))).join(" ") };
+  LOG_BUF.push(line);
+  if (LOG_BUF.length > LOG_BUF_MAX) LOG_BUF.shift();
+}
+console.log   = (...a) => { _pushLog("info",  a); _origLog(...a); };
+console.warn  = (...a) => { _pushLog("warn",  a); _origWarn(...a); };
+console.error = (...a) => { _pushLog("error", a); _origError(...a); };
+
+// ── Реестр heartbeat расширений ───────────────────────────────────────────────
+const EXT_REGISTRY = new Map(); // platformId → { platformId, version, browser, ip, lastSeen }
 
 // Catch unhandled rejections so we can see what's crashing the server
 process.on("unhandledRejection", (reason, promise) => {
@@ -20,6 +39,7 @@ const PayoutStore = require("./src/payoutStore");
 const SignalRunner = require("./src/signalRunner");
 const DepositStore = require("./src/depositStore");
 const dashboardPage = require("./src/dashboardPage");
+const adminPanel = require("./src/adminPanel");
 const { INDICATOR_CATEGORIES, INDICATORS } = require("./src/indicatorData");
 const { allAssetSymbols, allSubscriptionSymbols } = require("./src/assetUniverse");
 const licenseStore = require("./src/licenseStore");
@@ -32,7 +52,7 @@ const taskStore = new TaskStore();
 const payoutStore = new PayoutStore();
 const depositStore = new DepositStore();
 const tradeTracker = new TradeTracker(tickStore, candleBuilder);
-const signalRunner = new SignalRunner({ tickStore, candleBuilder, taskStore, payoutStore, tradeTracker });
+const signalRunner = new SignalRunner({ tickStore, candleBuilder, taskStore, payoutStore, tradeTracker, depositStore });
 
 // АРХИТЕКТУРНОЕ ИСПРАВЛЕНИЕ: Восстановление состояния при перезапуске сервера
 function initStoreStates() {
@@ -853,6 +873,110 @@ async function handle(req, res) {
       const body = parseJsonSafe(await readBody(req)) || {};
       const ok = licenseStore.rebindKey(body.key);
       return send(res, 200, { ok });
+    }
+
+    // POST /admin/extend  { platform_id, days }  → продлить подписку
+    if (req.method === "POST" && pathname === "/admin/extend") {
+      if (!isAdmin(req)) return send(res, 403, { ok: false, error: "Forbidden" });
+      const body = parseJsonSafe(await readBody(req)) || {};
+      const pid = String(body.platform_id || "").trim();
+      const days = Number(body.days || 30);
+      if (!pid) return send(res, 400, { ok: false, error: "platform_id required" });
+      licenseStore.getOrCreate(pid);
+      licenseStore.activate(pid, "admin_extend", 0);
+      return send(res, 200, { ok: true, status: licenseStore.getStatus(pid) });
+    }
+
+    // POST /admin/create-key  { platform_id }  → создать лицензионный ключ вручную
+    if (req.method === "POST" && pathname === "/admin/create-key") {
+      if (!isAdmin(req)) return send(res, 403, { ok: false, error: "Forbidden" });
+      const body = parseJsonSafe(await readBody(req)) || {};
+      const pid = String(body.platform_id || "manual_" + Date.now()).trim();
+      licenseStore.getOrCreate(pid);
+      licenseStore.activate(pid, "admin_create", 0);
+      return send(res, 200, { ok: true, status: licenseStore.getStatus(pid) });
+    }
+
+    // GET /admin/logs  → последние 300 строк логов
+    if (req.method === "GET" && pathname === "/admin/logs") {
+      if (!isAdmin(req)) return send(res, 403, { ok: false, error: "Forbidden" });
+      const q = getQuery(req);
+      const limit = Math.min(Number(q.limit || 100), LOG_BUF_MAX);
+      return send(res, 200, { ok: true, logs: LOG_BUF.slice(-limit) });
+    }
+
+    // GET /admin/metrics  → сводная метрика для дашборда
+    if (req.method === "GET" && pathname === "/admin/metrics") {
+      if (!isAdmin(req)) return send(res, 403, { ok: false, error: "Forbidden" });
+      const users = licenseStore.listAll();
+      const trades = tradeTracker.list({ limit: 10000 });
+      const today = new Date().toISOString().slice(0, 10);
+      const todayTrades = trades.filter(t => (t.closedAt || t.openedAt || "").startsWith(today));
+      const wins = todayTrades.filter(t => t.result === "WIN").length;
+      const losses = todayTrades.filter(t => t.result === "LOSS").length;
+      const autoStatus = signalRunner.status();
+      const memMB = Math.round(process.memoryUsage().heapUsed / 1024 / 1024);
+      const uptimeSec = Math.floor(process.uptime());
+      const tickSymbols = tickStore.getSymbols();
+      const now = Date.now();
+      const onlineExt = [...EXT_REGISTRY.values()].filter(e => now - e.lastSeen < 5 * 60 * 1000);
+      return send(res, 200, {
+        ok: true,
+        server: { uptime: uptimeSec, memMB, version: CONFIG.version, port: CONFIG.port },
+        users: {
+          total: users.length,
+          active: users.filter(u => u.status === "active").length,
+          trial: users.filter(u => u.status === "trial").length,
+          blocked: users.filter(u => u.status === "blocked").length
+        },
+        trades: {
+          total: trades.length,
+          today: todayTrades.length,
+          wins,
+          losses,
+          winRate: todayTrades.length ? Math.round(wins / todayTrades.length * 100) : 0
+        },
+        engine: {
+          enabled: autoStatus?.config?.enabled || false,
+          indicators: (autoStatus?.config?.indicators || []).length,
+          tickSymbols: tickSymbols.length,
+          lastTickAt: tickStore.state()?.lastTickAt || null
+        },
+        extensions: { online: onlineExt.length, total: EXT_REGISTRY.size }
+      });
+    }
+
+    // POST /extensions/heartbeat  { platform_id, version, browser }  → ping от расширения
+    if (req.method === "POST" && pathname === "/extensions/heartbeat") {
+      const body = parseJsonSafe(await readBody(req)) || {};
+      const pid = String(body.platform_id || "").trim();
+      if (!pid) return send(res, 400, { ok: false, error: "platform_id required" });
+      const ip = req.headers["x-forwarded-for"] || req.socket?.remoteAddress || "";
+      EXT_REGISTRY.set(pid, {
+        platformId: pid,
+        version: body.version || "?",
+        browser: body.browser || "?",
+        ip: ip.split(",")[0].trim(),
+        lastSeen: Date.now()
+      });
+      return send(res, 200, { ok: true });
+    }
+
+    // GET /admin/extensions  → список расширений с heartbeat
+    if (req.method === "GET" && pathname === "/admin/extensions") {
+      if (!isAdmin(req)) return send(res, 403, { ok: false, error: "Forbidden" });
+      const now = Date.now();
+      const list = [...EXT_REGISTRY.values()].map(e => ({
+        ...e,
+        online: now - e.lastSeen < 5 * 60 * 1000,
+        agoSec: Math.floor((now - e.lastSeen) / 1000)
+      })).sort((a, b) => b.lastSeen - a.lastSeen);
+      return send(res, 200, { ok: true, extensions: list });
+    }
+
+    // GET /admin  → панель администратора
+    if (req.method === "GET" && (pathname === "/admin" || pathname === "/admin/")) {
+      return sendHtml(res, 200, adminPanel());
     }
 
     // ──────────────────────────────────────────────────────────────────────────
