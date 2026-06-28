@@ -963,18 +963,17 @@ function analyzeIndicator(candlesInput, indicator = {}, options = {}) {
   }
 
   else if (id === "fractals") {
-    // Reversal logic: signal fires IMMEDIATELY when fractal is confirmed (2 candles after peak/low).
-    // DOWN fractal (local low) confirmed → BUY (reversal up expected).
-    // UP fractal (local high) confirmed → SELL (reversal down expected).
-    // maxAge=1: signal active for 1 extra candle after confirmation, then dies.
-    // This means the trade opens within 1-2 candles of the fractal appearing — not 8 candles later.
-    const maxAge = Number(getSetting(ind, "maxAge", 1));
+    const period = n(getSetting(ind, "period", 2), 2);
+    const maxAge = n(getSetting(ind, "maxAge", 1), 1);
     const idx = candles.length - 1;
     let upVal = null, downVal = null, upAge = Infinity, downAge = Infinity;
-    for (let i = idx - 2; i >= Math.max(2, idx - 2 - maxAge); i--) {
-      const age = (idx - 2) - i; // 0 = just confirmed this scan, 1 = 1 candle ago
-      const isUp   = n(candles[i].high) > n(candles[i-1].high) && n(candles[i].high) > n(candles[i-2].high) && n(candles[i].high) > n(candles[i+1].high) && n(candles[i].high) > n(candles[i+2].high);
-      const isDown = n(candles[i].low)  < n(candles[i-1].low)  && n(candles[i].low)  < n(candles[i-2].low)  && n(candles[i].low)  < n(candles[i+1].low)  && n(candles[i].low)  < n(candles[i+2].low);
+    for (let i = idx - period; i >= Math.max(period, idx - period - maxAge); i--) {
+      const age = (idx - period) - i;
+      let isUp = true, isDown = true;
+      for (let j = 1; j <= period; j++) {
+        if (n(candles[i].high) <= n(candles[i - j].high) || n(candles[i].high) <= n(candles[i + j].high)) isUp = false;
+        if (n(candles[i].low)  >= n(candles[i - j].low)  || n(candles[i].low)  >= n(candles[i + j].low))  isDown = false;
+      }
       if (upVal   === null && isUp)   { upVal   = n(candles[i].high); upAge   = age; }
       if (downVal === null && isDown) { downVal = n(candles[i].low);  downAge = age; }
       if (upVal !== null && downVal !== null) break;
