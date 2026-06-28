@@ -569,7 +569,8 @@ function analyzeIndicator(candlesInput, indicator = {}, options = {}) {
   }
 
   else if (id === "schaff-trend-cycle") {
-    const m = macdSeries(closes, 23, 50, 10); const macd = m.macd.map(v => v ?? 0);
+    const stcFast = n(getSetting(ind, "fast", 23), 23), stcSlow = n(getSetting(ind, "slow", 50), 50), stcSig = n(getSetting(ind, "period", 10), 10);
+    const m = macdSeries(closes, stcFast, stcSlow, stcSig); const macd = m.macd.map(v => v ?? 0);
     const st = stochasticSeries(candles.map((c, i) => ({...c, high: macd[i], low: macd[i], close: macd[i]})), 10, 3, 3);
     const S = last(st.k), Sp = st.k[st.k.length - 2];
     if (Sp < 20 && S >= 20) { side = "BUY"; score = 82; reasons.push("STC вышел из нижней зоны вверх."); }
@@ -591,7 +592,8 @@ function analyzeIndicator(candlesInput, indicator = {}, options = {}) {
   }
 
   else if (id === "alligator") {
-    const jaw = smmaSeries(closes, 13), teeth = smmaSeries(closes, 8), lips = smmaSeries(closes, 5);
+    const jawP = n(getSetting(ind, "jawPeriod", 13), 13), teethP = n(getSetting(ind, "teethPeriod", 8), 8), lipsP = n(getSetting(ind, "lipsPeriod", 5), 5);
+    const jaw = smmaSeries(closes, jawP), teeth = smmaSeries(closes, teethP), lips = smmaSeries(closes, lipsP);
     const L = last(lips), T = last(teeth), J = last(jaw), Lp = lips[lips.length - 2], Tp = teeth[teeth.length - 2], Jp = jaw[jaw.length - 2];
     if (L > T && T > J && L > Lp && T >= Tp) { side = "BUY"; score = 78; reasons.push("Lips выше Teeth выше Jaws: раскрытие вверх."); }
     else if (L < T && T < J && L < Lp && T <= Tp) { side = "SELL"; score = 78; reasons.push("Lips ниже Teeth ниже Jaws: раскрытие вниз."); }
@@ -634,10 +636,11 @@ function analyzeIndicator(candlesInput, indicator = {}, options = {}) {
   }
 
   else if (id === "ichimoku") {
-    missing = needCandles(candles, 55, id, name, symbol, timeframe); if (missing) return missing;
+    const tenkanP = n(getSetting(ind, "tenkan", 9), 9), kijunP2 = n(getSetting(ind, "kijun", 26), 26), senkouP = n(getSetting(ind, "senkou", 52), 52);
+    missing = needCandles(candles, senkouP + 3, id, name, symbol, timeframe); if (missing) return missing;
     const conv = (i, p) => (highest(highs.slice(i + 1 - p, i + 1)) + lowest(lows.slice(i + 1 - p, i + 1))) / 2;
     const i = candles.length - 1;
-    const tenkan = conv(i, 9), kijun = conv(i, 26), spanA = (tenkan + kijun) / 2, spanB = conv(i, 52);
+    const tenkan = conv(i, tenkanP), kijun = conv(i, kijunP2), spanA = (tenkan + kijun) / 2, spanB = conv(i, senkouP);
     const top = Math.max(spanA, spanB), bottom = Math.min(spanA, spanB);
     if (c > top && tenkan > kijun) { side = "BUY"; score = 76; reasons.push("Цена выше облака, Tenkan выше Kijun."); }
     else if (c < bottom && tenkan < kijun) { side = "SELL"; score = 76; reasons.push("Цена ниже облака, Tenkan ниже Kijun."); }
@@ -895,7 +898,7 @@ function analyzeIndicator(candlesInput, indicator = {}, options = {}) {
   }
 
   else if (id === "adx") {
-    const trendLevel = n(getSetting(ind, "trendLevel", 20), 20);
+    const trendLevel = n(getSetting(ind, "trendLevel", 25), 25);
     const a = adxSeries(candles, period); const A = last(a.adx), P = last(a.plusDI), M = last(a.minusDI);
     if (A >= trendLevel && P > M) { side = "BUY"; score = clamp(55 + (A - trendLevel), 58, 90); reasons.push(`ADX ${round(A)} выше ${trendLevel}, +DI выше -DI.`); }
     else if (A >= trendLevel && M > P) { side = "SELL"; score = clamp(55 + (A - trendLevel), 58, 90); reasons.push(`ADX ${round(A)} выше ${trendLevel}, -DI выше +DI.`); }
