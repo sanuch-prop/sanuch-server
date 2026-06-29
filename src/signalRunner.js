@@ -624,17 +624,6 @@ class SignalRunner {
     // Немедленное перекрытие: открыть recovery-задачи для недавних убытков (режим "immediate")
     try { this._checkImmediateRecovery(); } catch (_) {}
 
-    // Блокировка по разгону: если активный день FAILED_LOCKED — торговля остановлена
-    if (this.depositStore) {
-      try {
-        const depSummary = this.depositStore.calculate(this.tradeTracker?.trades || [], this.payoutStore);
-        if (depSummary?.active && depSummary.summary?.status === "FAILED_LOCKED") {
-          this._logEvent("skip", "ALL", "Разгон: день закрыт (FAILED_LOCKED). Торговля заблокирована до сброса.");
-          return { ok: true, enabled: true, created: [], skipped: [{ reason: "DEPOSIT_FAILED_LOCKED", message: "День разгона закрыт по дневному минусу." }] };
-        }
-      } catch (_) {}
-    }
-
     // Удалить устаревшие ожидания (старше 10 минут)
     const staleCutoff = Date.now() - 10 * 60 * 1000;
     for (const key of Object.keys(this.pendingConfirm)) {
