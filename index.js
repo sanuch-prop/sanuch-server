@@ -630,10 +630,10 @@ async function handle(req, res) {
       }
 
       const stopped = signalRunner.stop();
-      // Cancel queued tasks so they don't execute after the user stops auto-trading.
+      // Cancel only PRIMARY user's queued tasks — leave secondary users' tasks intact.
       let cancelled = 0;
       for (const task of taskStore.tasks) {
-        if (task.status === "CREATED") {
+        if (task.status === "CREATED" && (task.userId === primaryId || task.userId === "default-user" || task.userId === "auto-user")) {
           task.status = "CANCELLED";
           task.cancelledAt = new Date().toISOString();
           cancelled++;
