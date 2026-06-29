@@ -814,12 +814,74 @@ async function handle(req, res) {
 
     if (req.method === "GET" && pathname === "/trades") {
       const q = getQuery(req);
+      const userId = q.userId ? String(q.userId).trim() : null;
+      const limit = Number(q.limit || 100);
+      if (userId && tradeTracker.pgTrades) {
+        const [stats, trades] = await Promise.all([
+          tradeTracker.pgTrades.stats(userId),
+          tradeTracker.pgTrades.list({ userId, limit })
+        ]);
+        return send(res, 200, { ok: true, stats, indicatorStats: {}, trades });
+      }
+      if (userId) {
+        const all = tradeTracker.list({ limit: 10000 });
+        const filtered = all.filter(t => t.userId === userId);
+        const closed = filtered.filter(t => t.status === "CLOSED");
+        const wins = closed.filter(t => t.result === "WIN").length;
+        const losses = closed.filter(t => t.result === "LOSS").length;
+        const decisive = wins + losses;
+        return send(res, 200, {
+          ok: true,
+          stats: {
+            total: filtered.length, open: filtered.filter(t => t.status === "OPEN").length,
+            closed: closed.length, wins, losses,
+            draws: closed.filter(t => t.result === "DRAW").length,
+            noPrice: closed.filter(t => t.result === "NO_PRICE").length,
+            winRate: decisive ? Number(((wins / decisive) * 100).toFixed(2)) : 0,
+            profit: closed.reduce((s, t) => s + (Number(t.pnl) || 0), 0)
+          },
+          indicatorStats: {},
+          trades: filtered.slice(0, limit)
+        });
+      }
       return send(res, 200, {
         ok: true,
         stats: tradeTracker.stats(),
         indicatorStats: tradeTracker.statsByIndicator(),
-        trades: tradeTracker.list({ limit: Number(q.limit || 100) })
+        trades: tradeTracker.list({ limit })
       });
+    }
+
+    if (req.method === "GET" && pathname === "/me") {
+      const q = getQuery(req);
+      const userId = String(q.userId || "").trim();
+      if (!userId) return send(res, 400, { ok: false, error: "userId required" });
+      const lic = licenseStore.getStatus(userId) || { status: "unknown" };
+      const runner = signalRunner.getUserStatus ? signalRunner.getUserStatus(userId) : null;
+      const limit = Number(q.limit || 20);
+      let stats, recentTrades;
+      if (tradeTracker.pgTrades) {
+        [stats, recentTrades] = await Promise.all([
+          tradeTracker.pgTrades.stats(userId),
+          tradeTracker.pgTrades.list({ userId, limit })
+        ]);
+      } else {
+        const all = tradeTracker.list({ limit: 10000 }).filter(t => t.userId === userId);
+        const closed = all.filter(t => t.status === "CLOSED");
+        const wins = closed.filter(t => t.result === "WIN").length;
+        const losses = closed.filter(t => t.result === "LOSS").length;
+        const decisive = wins + losses;
+        stats = {
+          total: all.length, open: all.filter(t => t.status === "OPEN").length,
+          closed: closed.length, wins, losses,
+          draws: closed.filter(t => t.result === "DRAW").length,
+          noPrice: closed.filter(t => t.result === "NO_PRICE").length,
+          winRate: decisive ? Number(((wins / decisive) * 100).toFixed(2)) : 0,
+          profit: closed.reduce((s, t) => s + (Number(t.pnl) || 0), 0)
+        };
+        recentTrades = all.slice(0, limit);
+      }
+      return send(res, 200, { ok: true, userId, license: lic, stats, runner, recentTrades });
     }
 
     if (req.method === "GET" && (pathname === "/auto/trades" || pathname === "/auto/history")) {
