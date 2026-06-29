@@ -71,7 +71,8 @@ class SignalRunner {
       const primaryId = this.config.userId || CONFIG.autoSignal.userId;
       for (const u of userStore.list()) {
         if (u.userId !== primaryId) {
-          this.users.set(u.userId, this._createUserState(u.config || {}, u));
+          const cfg = { userId: u.userId, clientId: u.clientId || u.userId, ...(u.config || {}) };
+          this.users.set(u.userId, this._createUserState(cfg, u));
         }
       }
     }
@@ -149,17 +150,21 @@ class SignalRunner {
   // Register or update an additional user (non-primary).
   registerUser(userId, userRecord) {
     userId = String(userId);
+    // Always inject userId/clientId so tasks are routed to the right extension.
+    const configWithIds = {
+      userId,
+      clientId: userRecord.clientId || userId,
+      ...(userRecord.config || {})
+    };
     if (this.users.has(userId)) {
       const us = this.users.get(userId);
-      if (userRecord.config) {
-        Object.assign(us.config, userRecord.config);
-        if (Array.isArray(us.config.combos)) {
-          us.combos = us.config.combos.filter(c => c && c.id && c.condition);
-        }
+      Object.assign(us.config, configWithIds);
+      if (Array.isArray(us.config.combos)) {
+        us.combos = us.config.combos.filter(c => c && c.id && c.condition);
       }
-      if (userRecord.clientId) us.meta = { ...us.meta, ...userRecord };
+      us.meta = { ...us.meta, ...userRecord };
     } else {
-      this.users.set(userId, this._createUserState(userRecord.config || {}, userRecord));
+      this.users.set(userId, this._createUserState(configWithIds, userRecord));
     }
     if (this.userStore) this.userStore.upsert(userId, userRecord);
     return this.getUserStatus(userId);
