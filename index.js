@@ -573,6 +573,11 @@ async function handle(req, res) {
     }
 
     if (req.method === "GET" && pathname === "/auto/status") {
+      const q = getQuery(req);
+      if (q.userId) {
+        const us = signalRunner.getUserStatus(q.userId);
+        if (us) return send(res, 200, us);
+      }
       return send(res, 200, signalRunner.status());
     }
 
@@ -584,21 +589,46 @@ async function handle(req, res) {
     if (req.method === "POST" && pathname === "/auto/config") {
       const body = parseJsonSafe(await readBody(req));
       if (!body) return send(res, 400, { ok: false, error: "BAD_JSON" });
-      
+
+      const userId = body.userId;
+      const primaryId = signalRunner.config.userId || CONFIG.autoSignal.userId;
+      if (userId && userId !== primaryId) {
+        // Non-primary user: auto-register and update config
+        const clientId = body.clientId || req.headers["x-sanuch-client-id"] || userId;
+        const result = signalRunner.registerUser(userId, { userId, clientId, config: body });
+        return send(res, 200, result || { ok: true, userId });
+      }
+
       const result = signalRunner.updateConfig(body);
-      // АРХИТЕКТУРНОЕ ИСПРАВЛЕНИЕ: Мгновенный сброс новой конфигурации на диск
       if (typeof signalRunner.save === "function") signalRunner.save();
-      
       return send(res, 200, result);
     }
 
     if (req.method === "POST" && pathname === "/auto/start") {
       const bodyText = await readBody(req);
       const body = bodyText ? parseJsonSafe(bodyText) : {};
+
+      const userId = body?.userId;
+      const primaryId = signalRunner.config.userId || CONFIG.autoSignal.userId;
+      if (userId && userId !== primaryId) {
+        const clientId = body.clientId || req.headers["x-sanuch-client-id"] || userId;
+        signalRunner.registerUser(userId, { userId, clientId, config: body });
+        return send(res, 200, signalRunner.startUser(userId));
+      }
+
       return send(res, 200, signalRunner.start(body || {}));
     }
 
     if (req.method === "POST" && pathname === "/auto/stop") {
+      const bodyText = await readBody(req);
+      const body = bodyText ? parseJsonSafe(bodyText) : {};
+      const userId = body?.userId;
+      const primaryId = signalRunner.config.userId || CONFIG.autoSignal.userId;
+
+      if (userId && userId !== primaryId) {
+        return send(res, 200, signalRunner.stopUser(userId));
+      }
+
       const stopped = signalRunner.stop();
       // Cancel queued tasks so they don't execute after the user stops auto-trading.
       let cancelled = 0;
@@ -712,6 +742,19 @@ async function handle(req, res) {
       const q = getQuery(req);
       const clientId = q.clientId || req.headers["x-sanuch-client-id"] || "default-client";
       const accountMode = q.accountMode || null; // "DEMO" or "REAL" — prevents cross-account task delivery
+
+      // Auto-link: when a non-primary user polls, update their clientId for targeted task delivery.
+      if (q.userId) {
+        const primaryId = signalRunner.config.userId || CONFIG.autoSignal.userId;
+        if (q.userId !== primaryId && signalRunner.users.has(q.userId)) {
+          const us = signalRunner.users.get(q.userId);
+          if (us.config.clientId !== clientId) {
+            us.config.clientId = clientId;
+            if (userStore) userStore.upsert(q.userId, { config: { clientId } });
+          }
+        }
+      }
+
       return send(res, 200, {
         ok: true,
         clientId,
