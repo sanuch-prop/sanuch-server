@@ -150,15 +150,21 @@ class SignalRunner {
   // Register or update an additional user (non-primary).
   registerUser(userId, userRecord) {
     userId = String(userId);
-    // Always inject userId/clientId so tasks are routed to the right extension.
+    const incomingClientId = userRecord.clientId || null;
+    // For new users, use userId as clientId placeholder until auto-link provides the device ID.
     const configWithIds = {
       userId,
-      clientId: userRecord.clientId || userId,
+      clientId: incomingClientId || userId,
       ...(userRecord.config || {})
     };
     if (this.users.has(userId)) {
       const us = this.users.get(userId);
+      const savedClientId = us.config.clientId;
       Object.assign(us.config, configWithIds);
+      // Don't overwrite a device-specific clientId (from auto-link) with the userId fallback.
+      if (!incomingClientId && savedClientId && savedClientId !== userId) {
+        us.config.clientId = savedClientId;
+      }
       if (Array.isArray(us.config.combos)) {
         us.combos = us.config.combos.filter(c => c && c.id && c.condition);
       }
