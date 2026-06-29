@@ -1191,6 +1191,10 @@ async function boot() {
     const pgTrades = new PgTrades(pgStorage.getPool());
     await tradeTracker.init(pgTrades);
     console.log("[boot] Trades SQL table ready.");
+    const PgTasks = require("./src/pgTasks");
+    const pgTasksInst = new PgTasks(pgStorage.getPool());
+    await taskStore.init(pgTasksInst);
+    console.log("[boot] Tasks SQL table ready.");
   }
   initStoreStates();
 

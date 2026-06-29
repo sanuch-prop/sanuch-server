@@ -3,7 +3,28 @@ const storage = require("./storage");
 const { makeId, nowIso, accountModeToIsDemo, makeRequestId } = require("./utils");
 const { validateTradeTask } = require("./riskGuard");
 class TaskStore {
-  constructor() { this.tasks = storage.readJson("tasks.json", []); this.events = storage.readJson("task-events.json", []); this.seenIdemKeys = new Set(this.tasks.map(t => t.idemKey).filter(Boolean)); }
+  constructor(pgTasks = null) {
+    this.pgTasks = pgTasks;
+    this.tasks = pgTasks ? [] : storage.readJson("tasks.json", []);
+    this.events = storage.readJson("task-events.json", []);
+    this.seenIdemKeys = new Set(this.tasks.map(t => t.idemKey).filter(Boolean));
+  }
+
+  async init(pgTasks) {
+    if (pgTasks) this.pgTasks = pgTasks;
+    if (!this.pgTasks) return;
+    try {
+      await this.pgTasks.ensureTable();
+      this.tasks = await this.pgTasks.loadActive();
+      const idemKeys = await this.pgTasks.loadIdemKeys();
+      this.seenIdemKeys = new Set(idemKeys);
+      console.log(`[taskStore] Loaded ${this.tasks.length} active tasks from PostgreSQL`);
+    } catch (err) {
+      console.error("[taskStore] init error:", err.message);
+      this.tasks = storage.readJson("tasks.json", []);
+      this.seenIdemKeys = new Set(this.tasks.map(t => t.idemKey).filter(Boolean));
+    }
+  }
   addEvent(type, message, data={}) { const event = { id:makeId("task_evt"), type, message, time:nowIso(), data }; this.events.push(event); if (this.events.length > 2000) this.events.splice(0, this.events.length-2000); return event; }
   createOpenTradeTask(input) {
     const validation = validateTradeTask(input); if (!validation.ok) return { ok:false, error:"TASK_VALIDATION_FAILED", errors:validation.errors };
@@ -13,7 +34,11 @@ class TaskStore {
     this.seenIdemKeys.add(idemKey);
     const now = Date.now();
     const task = { id:makeId("task"), type:"OPEN_TRADE", userId:input.userId || "default-user", clientId:input.clientId || "all", accountMode:n.accountMode, isDemo:accountModeToIsDemo(n.accountMode), symbol:n.symbol, action:n.action, amount:n.amount, expirySec:n.expirySec, optionType:CONFIG.trading.optionType, requestId:makeRequestId(), source:input.source || "MANUAL", signalId:input.signalId || null, signalPrice:input.signalPrice ?? null, reason:input.reason || "", meta:input.meta || {}, status:"CREATED", idemKey, createdAt:nowIso(), createdAtMs:now, expiresAtMs:now + (input.ttlMs || CONFIG.tasks.ttlMs), deliveredAt:null, ackedAt:null, ack:null };
-    this.tasks.push(task); this.addEvent("TASK_CREATED", `${task.accountMode} ${task.action} ${task.symbol} ${task.expirySec}s`, { taskId:task.id }); return { ok:true, task };
+    this.tasks.push(task); this.addEvent("TASK_CREATED", `${task.accountMode} ${task.action} ${task.symbol} ${task.expirySec}s`, { taskId:task.id });
+    if (this.pgTasks) {
+      this.pgTasks.insert(task).catch(err => console.warn("[taskStore] SQL insert error:", err.message));
+    }
+    return { ok:true, task };
   }
   poll(clientId="default-client", limit=CONFIG.tasks.pollLimit, accountMode=null) {
     const now = Date.now(), out = [];
@@ -32,7 +57,11 @@ class TaskStore {
   ack(input) {
     const task = this.tasks.find(t => t.id === input.taskId); if (!task) return { ok:false, error:"TASK_NOT_FOUND" };
     task.status = input.status || "ACKED"; task.ackedAt = nowIso(); task.ack = { clientId:input.clientId || null, status:task.status, message:input.message || "", requestId:input.requestId || task.requestId, socketResponse:input.socketResponse || null, time:nowIso() };
-    this.addEvent("TASK_ACKED", `${task.id} => ${task.status}`, {taskId:task.id, status:task.status}); return { ok:true, task };
+    this.addEvent("TASK_ACKED", `${task.id} => ${task.status}`, {taskId:task.id, status:task.status});
+    if (this.pgTasks) {
+      this.pgTasks.ack(task.id, task.ack).catch(err => console.warn("[taskStore] SQL ack error:", err.message));
+    }
+    return { ok:true, task };
   }
   cancelByClient(clientId) {
     let count = 0;
@@ -43,6 +72,9 @@ class TaskStore {
       task.cancelledAt = nowIso();
       this.addEvent("TASK_CANCELLED", `${task.id} cancelled (client disconnect)`, { taskId: task.id, clientId });
       count++;
+    }
+    if (count > 0 && this.pgTasks) {
+      this.pgTasks.cancelByClient(clientId).catch(err => console.warn("[taskStore] SQL cancel error:", err.message));
     }
     return count;
   }
@@ -56,7 +88,15 @@ class TaskStore {
     if (this.tasks.length > 500) this.tasks = this.tasks.slice(-500);
     if (this.tasks.length !== before) this.seenIdemKeys = new Set(this.tasks.map(t => t.idemKey).filter(Boolean));
   }
-  save() { this.prune(); storage.writeJson("tasks.json", this.tasks); storage.writeJson("task-events.json", this.events); }
+  save() {
+    this.prune();
+    if (this.pgTasks) {
+      this.pgTasks.pruneExpired().catch(err => console.warn("[taskStore] SQL prune error:", err.message));
+      return;
+    }
+    storage.writeJson("tasks.json", this.tasks);
+    storage.writeJson("task-events.json", this.events);
+  }
   state() { const byStatus = {}; for (const t of this.tasks) byStatus[t.status] = (byStatus[t.status] || 0) + 1; return { total:this.tasks.length, byStatus, last:this.tasks[this.tasks.length-1] || null }; }
 }
 module.exports = TaskStore;
