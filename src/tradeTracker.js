@@ -276,11 +276,12 @@ class TradeTracker {
       trade = this.trades.find(t => t.externalId === externalId && t.status === "CLOSED");
     }
 
-    // 2. Closed trade: recent within 3 min, symbol must match when known
+    // 2. Closed trade: recent within 3 min, symbol must match when known.
+    // Skip trades that already have a confirmed externalId result — they are finalized.
     if (!trade) {
       const cutoff = Date.now() - 3 * 60 * 1000;
       const candidates = this.trades
-        .filter(t => t.status === "CLOSED" && (t.closedAtMs || 0) > cutoff)
+        .filter(t => t.status === "CLOSED" && (t.closedAtMs || 0) > cutoff && !t._resultFinal)
         .sort((a, b) => (b.closedAtMs || 0) - (a.closedAtMs || 0));
       // Never fall back to candidates[0] when symbol is known — prevents wrong-symbol matches
       trade = (dataSymbol ? candidates.find(sameSymbol) : candidates[0]) || null;
@@ -336,9 +337,11 @@ class TradeTracker {
       trade.directionMove = round(trade.action === "call" ? rawMove : -rawMove);
     }
 
-    // Overwrite result with authoritative PO value
+    // Overwrite result with authoritative PO value.
+    // Mark as final when we matched by externalId — prevents a stray duplicate result from overwriting it.
     trade.result       = result;
     trade.resultSource = "PO_EXTERNAL_" + eventName.toUpperCase();
+    if (externalId && (trade.externalId === externalId)) trade._resultFinal = true;
     const amount = finiteOrNull(trade.amount) || 0;
     if (result === "WIN") {
       const pct = payoutPct ?? finiteOrNull(trade.payoutPercent) ?? 82;

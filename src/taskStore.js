@@ -31,6 +31,9 @@ class TaskStore {
     const n = validation.normalized;
     const idemKey = input.idemKey || `${input.userId || "user"}|${input.clientId || "all"}|${n.accountMode}|${n.symbol}|${n.action}|${n.amount}|${n.expirySec}|${input.signalId || ""}|${Math.floor(Date.now()/1000)}`;
     if (this.seenIdemKeys.has(idemKey)) return { ok:false, error:"DUPLICATE_TASK", idemKey };
+    // Hard block: never allow two active tasks for the same symbol — catches any path that bypasses idemKey dedup.
+    const symbolCollision = this.tasks.some(t => t.symbol === n.symbol && ["CREATED","DELIVERED"].includes(t.status));
+    if (symbolCollision) return { ok:false, error:"SYMBOL_COLLISION", symbol:n.symbol };
     this.seenIdemKeys.add(idemKey);
     const now = Date.now();
     const task = { id:makeId("task"), type:"OPEN_TRADE", userId:input.userId || "default-user", clientId:input.clientId || "all", accountMode:n.accountMode, isDemo:accountModeToIsDemo(n.accountMode), symbol:n.symbol, action:n.action, amount:n.amount, expirySec:n.expirySec, optionType:CONFIG.trading.optionType, requestId:makeRequestId(), source:input.source || "MANUAL", signalId:input.signalId || null, signalPrice:input.signalPrice ?? null, reason:input.reason || "", meta:input.meta || {}, status:"CREATED", idemKey, createdAt:nowIso(), createdAtMs:now, expiresAtMs:now + (input.ttlMs || CONFIG.tasks.ttlMs), deliveredAt:null, ackedAt:null, ack:null };
