@@ -253,7 +253,6 @@ class DepositStore {
     const currentBalance = round2(active.startBalance + totalPnl);
 
     let firstOpenFound = false;
-    let failed = false;
     let activeDay = rowsSource[rowsSource.length - 1]?.day || 1;
     const rows = [];
 
@@ -262,29 +261,18 @@ class DepositStore {
       const dayPnl = round2(dayTrades.reduce((sum, t) => sum + t.pnl, 0));
       const dayStart = src.capital;
       const dayTarget = round2(src.capital + src.profit);
-      const lossLimit = active.dailyLossPercent > 0 ? round2(dayStart * active.dailyLossPercent / 100) : round2(src.profit || src.stake || 0);
-      const failLine = round2(dayStart - lossLimit);
 
       let access = "LOCKED";
       let status = "LOCKED";
 
-      if (failed) {
-        access = "LOCKED";
-        status = "LOCKED_AFTER_FAIL";
-      } else if (currentBalance >= dayTarget) {
+      if (currentBalance >= dayTarget) {
         access = "OPEN";
         status = "PASSED";
       } else if (!firstOpenFound) {
         firstOpenFound = true;
         activeDay = src.day;
         access = "OPEN";
-
-        if (lossLimit > 0 && currentBalance < failLine) {
-          status = "FAILED_LOCKED";
-          failed = true;
-        } else {
-          status = "ACTIVE";
-        }
+        status = "ACTIVE";
       }
 
       rows.push({
@@ -295,11 +283,8 @@ class DepositStore {
         load: src.load,
         level: src.level,
         expectedBalance: dayTarget,
-        lossLimit,
-        failLine,
         currentBalance: src.day === activeDay ? currentBalance : null,
-        needToTarget: status === "ACTIVE" || status === "FAILED_LOCKED" ? round2(Math.max(0, dayTarget - currentBalance)) : null,
-        drawdownToFail: status === "ACTIVE" ? round2(Math.max(0, currentBalance - failLine)) : null,
+        needToTarget: status === "ACTIVE" ? round2(Math.max(0, dayTarget - currentBalance)) : null,
         trades: dayTrades.length,
         pnl: dayPnl,
         access,
@@ -310,7 +295,7 @@ class DepositStore {
     const decisive = wins + losses;
     const winRate = decisive ? pct(wins / decisive * 100) : 0;
     const progressPercent = pct(Math.max(0, Math.min(100, (currentBalance - active.startBalance) / (active.targetBalance - active.startBalance) * 100)));
-    const activeRow = rows.find(r => r.status === "ACTIVE" || r.status === "FAILED_LOCKED") || rows[rows.length - 1];
+    const activeRow = rows.find(r => r.status === "ACTIVE") || rows[rows.length - 1];
     const toFinalTarget = round2(Math.max(0, active.targetBalance - currentBalance));
 
     const summary = {
@@ -324,7 +309,7 @@ class DepositStore {
       startedAt: active.startedAt,
       days: rows.length,
       activeDay: activeRow?.day || activeDay,
-      status: failed ? "FAILED_LOCKED" : (currentBalance >= active.targetBalance ? "COMPLETED" : "ACTIVE"),
+      status: currentBalance >= active.targetBalance ? "COMPLETED" : "ACTIVE",
       startBalance: active.startBalance,
       targetBalance: active.targetBalance,
       currentBalance,
