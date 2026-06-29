@@ -23,16 +23,19 @@ const REASON_RU = {
   TASK_PENDING:           "Блок: задача по этой паре ещё ожидает исполнения.",
   MAX_OPEN_TRADES:        "Блок: достигнут лимит одновременно открытых сделок.",
   OUTSIDE_WORK_HOURS:     "Вне часов работы индикатора.",
-  MG_MAX_STEPS:           "Мартингейл: все шаги перекрытия исчерпаны."
+  MG_MAX_STEPS:           "Мартингейл: все шаги перекрытия исчерпаны.",
+  STOP_LOSS:              "Стоп-лосс: суточный убыток достиг лимита.",
+  TAKE_PROFIT:            "Тейк-профит: суточная прибыль достигла цели."
 };
 
 class SignalRunner {
-  constructor({ tickStore, candleBuilder, taskStore, payoutStore, tradeTracker }) {
+  constructor({ tickStore, candleBuilder, taskStore, payoutStore, tradeTracker, depositStore }) {
     this.tickStore = tickStore;
     this.candleBuilder = candleBuilder;
     this.taskStore = taskStore;
     this.payoutStore = payoutStore;
     this.tradeTracker = tradeTracker || null;
+    this.depositStore = depositStore || null;
 
     this.config = {
       ...CONFIG.autoSignal,
@@ -126,8 +129,17 @@ class SignalRunner {
     const maxSteps = Math.max(1, Number(overrides.maxSteps || cfg.martingaleSteps) || 3);
 
     const trades = this.tradeTracker?.trades || [];
+    const todayStart = new Date().setHours(0, 0, 0, 0);
+    // comboId в overrides → фильтруем только сделки этой связки
+    // без comboId → только standalone-сделки индикаторов (не combo)
+    // Считаем только сделки текущего дня — исключаем хвост убытков из прошлых сессий
     const closed = trades
-      .filter(t => t.symbol === symbol && t.status === "CLOSED")
+      .filter(t => {
+        if (t.symbol !== symbol || t.status !== "CLOSED") return false;
+        if ((t.closedAtMs || 0) < todayStart) return false;
+        if (overrides.comboId) return t.meta?.comboId === overrides.comboId;
+        return t.source !== "COMBO";
+      })
       .sort((a, b) => (b.closedAtMs || 0) - (a.closedAtMs || 0));
 
     let steps = 0;
@@ -161,6 +173,15 @@ class SignalRunner {
 
   getMartingaleAmount(symbol, currentPayoutPercent) {
     return this.getMartingaleInfo(symbol, currentPayoutPercent).amount;
+  }
+
+  // Суммирует pnl закрытых сегодня сделок по произвольному фильтру
+  _getTodayPnl(filterFn) {
+    const trades = this.tradeTracker?.trades || [];
+    const todayMs = new Date().setHours(0, 0, 0, 0);
+    return trades
+      .filter(t => t.status === "CLOSED" && (t.closedAtMs || 0) >= todayMs && filterFn(t))
+      .reduce((sum, t) => sum + Number(t.pnl || 0), 0);
   }
 
   _logEvent(level, symbol, message, extra = {}) {
@@ -285,6 +306,17 @@ class SignalRunner {
 
     if (!this.config.enabled && !force) {
       return { ok: true, enabled: false, created: [], skipped: [{ reason: "AUTO_DISABLED" }] };
+    }
+
+    // Блокировка по разгону: если активный день FAILED_LOCKED — торговля остановлена
+    if (this.depositStore) {
+      try {
+        const depSummary = this.depositStore.calculate(this.tradeTracker?.trades || [], this.payoutStore);
+        if (depSummary?.active && depSummary.summary?.status === "FAILED_LOCKED") {
+          this._logEvent("skip", "ALL", "Разгон: день закрыт (FAILED_LOCKED). Торговля заблокирована до сброса.");
+          return { ok: true, enabled: true, created: [], skipped: [{ reason: "DEPOSIT_FAILED_LOCKED", message: "День разгона закрыт по дневному минусу." }] };
+        }
+      } catch (_) {}
     }
 
     // Удалить устаревшие ожидания (старше 10 минут)
@@ -602,8 +634,25 @@ class SignalRunner {
         }
       }
 
-      const tradeAmount = Number(signal.amount || mgInfo.amount);
+      // Стоп-лосс / Тейк-профит индикатора (суточный P&L)
+      const indStopLoss   = Number(iSett.stopLoss   || 0);
+      const indTakeProfit = Number(iSett.takeProfit  || 0);
+      if ((indStopLoss > 0 || indTakeProfit > 0) && this.tradeTracker && chosenInd?.id) {
+        const indId = String(chosenInd.id);
+        const pnl = this._getTodayPnl(t => t.source !== "COMBO" &&
+          t.meta?.strategy?.indicators?.some(i => String(i.id) === indId));
+        if (indStopLoss > 0 && pnl <= -indStopLoss) {
+          skip(symbol, "STOP_LOSS", REASON_RU.STOP_LOSS + ` Убыток $${Math.abs(pnl).toFixed(2)} ≥ лимит $${indStopLoss}`);
+          continue;
+        }
+        if (indTakeProfit > 0 && pnl >= indTakeProfit) {
+          skip(symbol, "TAKE_PROFIT", REASON_RU.TAKE_PROFIT + ` Прибыль $${pnl.toFixed(2)} ≥ цель $${indTakeProfit}`);
+          continue;
+        }
+      }
+
       const mgStep = mgInfo.step;
+      const tradeAmount = mgStep > 0 ? Number(mgInfo.amount) : Number(signal.amount || baseAmount);
 
       // Per-step expiry for recovery trades; else normal signal expiry
       const stepExpiry = activeMgStep?.expiry || null;
@@ -701,6 +750,9 @@ class SignalRunner {
     const TIMEOUT_5MIN = 5 * 60 * 1000;
     const label = `[Combo ${combo.name || combo.id}]`;
 
+    // Assets filter: skip if symbol not in combo's allowed assets list
+    if (Array.isArray(combo.assets) && combo.assets.length > 0 && !combo.assets.includes(symbol)) return;
+
     // Clean stale state for this key
     if (state && (now - state.seenAt) > 10 * 60 * 1000) {
       this.comboStates.delete(stateKey);
@@ -724,7 +776,8 @@ class SignalRunner {
     }
 
     let openAction = null;
-    let openExpiry = Number(combo.ind1?.expirySec || combo.ind2?.expirySec || this.config.expirySec || 15);
+    const _csExpiry = Number(combo.combo_settings?.expirySec || 0);
+    let openExpiry = _csExpiry > 0 ? _csExpiry : Number(combo.ind1?.expirySec || combo.ind2?.expirySec || this.config.expirySec || 15);
 
     switch (combo.condition) {
 
@@ -937,15 +990,17 @@ class SignalRunner {
 
   _openComboTrade(symbol, action, expirySec, combo) {
     const label = `[Combo ${combo.name || combo.id}]`;
+    const cs = combo.combo_settings || {};  // все настройки Регламента/Мартингейла
 
     // 1. Working hours check
     const tzOffset = Number(this.config.timezoneOffsetHours || 0);
-    if (combo.workTime && !this._isWithinWorkTime(combo.workTime, tzOffset)) {
+    const csWorkTime = cs.workTime || combo.workTime;
+    if (csWorkTime && !this._isWithinWorkTime(csWorkTime, tzOffset)) {
       return;
     }
 
     // 2. Payout filter (use combo's own minPayoutPercent)
-    const minPayout = Number(combo.minPayoutPercent || 75);
+    const minPayout = Number(cs.minPayoutPercent || combo.minPayoutPercent || 75);
     const rawPayoutCombo = this.payoutStore?.get(symbol) || null;
     const payoutAgeCombo = rawPayoutCombo ? (Date.now() - (rawPayoutCombo.updatedAtMs || 0)) : Infinity;
     const payout = payoutAgeCombo < 2 * 60 * 60 * 1000 ? rawPayoutCombo : null;
@@ -956,6 +1011,21 @@ class SignalRunner {
     if (Number(payout.payoutPercent || 0) < minPayout) {
       this._logEvent("skip", symbol, `${label} Payout ${payout.payoutPercent}% < ${minPayout}% — пропуск`);
       return;
+    }
+
+    // Стоп-лосс / Тейк-профит связки (суточный P&L)
+    const comboSL = Number(cs.stopLoss  || combo.stopLoss  || 0);
+    const comboTP = Number(cs.takeProfit || combo.takeProfit || 0);
+    if ((comboSL > 0 || comboTP > 0) && this.tradeTracker) {
+      const pnl = this._getTodayPnl(t => t.meta?.comboId === combo.id);
+      if (comboSL > 0 && pnl <= -comboSL) {
+        this._logEvent("skip", symbol, `${label} Стоп-лосс: убыток $${Math.abs(pnl).toFixed(2)} ≥ $${comboSL}`);
+        return;
+      }
+      if (comboTP > 0 && pnl >= comboTP) {
+        this._logEvent("skip", symbol, `${label} Тейк-профит: прибыль $${pnl.toFixed(2)} ≥ $${comboTP}`);
+        return;
+      }
     }
 
     // 3 & 4. In-flight tracking — reliable lock from task creation until trade expires
@@ -969,7 +1039,7 @@ class SignalRunner {
     const inFlightKey = `${combo.id}|${symbol}`;
     if (this._comboInFlight.has(inFlightKey)) return;
 
-    const maxOpen = Number(combo.maxOpenTrades || 1);
+    const maxOpen = Number(cs.maxOpenTrades || combo.maxOpenTrades || 1);
     if (maxOpen > 0) {
       const activeCount = [...this._comboInFlight.values()].filter(v => v.comboId === combo.id).length;
       if (activeCount >= maxOpen) {
@@ -983,21 +1053,22 @@ class SignalRunner {
     this._comboInFlight.set(inFlightKey, { comboId: combo.id, symbol, expiresAt: now + lockMs });
 
     // 5. Martingale: use combo's own mg settings if configured
-    const iSett = combo.reglamentSettings || {};
-    const baseAmount = Number(combo.amount || this.config.amount || 1);
+    const iSett = cs;
+    const baseAmount = Number(cs.amount || combo.amount || this.config.amount || 1);
     const hasMg = iSett['mg1_enabled'] !== undefined || iSett['mg1_recoveries'] !== undefined || iSett.mgStepCount !== undefined;
     const mgEnabled = hasMg ? (iSett['mg1_enabled'] !== 'off') : false;
 
     let tradeAmount = baseAmount;
-    // If combo has its own expirySec set in reglement, it overrides the individual indicator's expiry
-    let tradeExpirySec = Number(combo.expirySec || 0) > 0 ? Number(combo.expirySec) : Number(expirySec);
+    // If combo_settings has expirySec > 0, it overrides the individual indicator's expiry
+    const csExpiry = Number(cs.expirySec || combo.expirySec || 0);
+    let tradeExpirySec = csExpiry > 0 ? csExpiry : Number(expirySec);
     let tradeAction = action;
     let mgStep = 0;
 
     if (mgEnabled) {
       const payoutPct = payout?.payoutPercent || null;
       const maxRecoveries = this._getMgMaxRecoveries(iSett);
-      const mgInfo = this.getMartingaleInfo(symbol, payoutPct, { enabled: true, maxSteps: maxRecoveries, baseAmount });
+      const mgInfo = this.getMartingaleInfo(symbol, payoutPct, { enabled: true, maxSteps: maxRecoveries, baseAmount, comboId: combo.id });
       mgStep = mgInfo.step;
 
       if (mgStep > 0) {
