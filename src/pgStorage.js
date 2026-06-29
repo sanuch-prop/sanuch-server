@@ -85,4 +85,9 @@ function appendJsonl(name, row) {
   writeJson(name, existing);
 }
 
-module.exports = { loadAll, readJson, writeJson, appendJsonl };
+function getPool() {
+  if (!pool) initPool();
+  return pool;
+}
+
+module.exports = { loadAll, readJson, writeJson, appendJsonl, getPool };

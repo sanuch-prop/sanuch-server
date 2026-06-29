@@ -8,10 +8,25 @@ function finiteOrNull(value) {
 }
 
 class TradeTracker {
-  constructor(tickStore, candleBuilder) {
+  constructor(tickStore, candleBuilder, pgTrades = null) {
     this.tickStore = tickStore;
     this.candleBuilder = candleBuilder || null;
-    this.trades = storage.readJson("trades.json", []);
+    this.pgTrades = pgTrades;
+    this.trades = pgTrades ? [] : storage.readJson("trades.json", []);
+  }
+
+  // Called from boot() after PostgreSQL is ready.
+  async init(pgTrades) {
+    if (pgTrades) this.pgTrades = pgTrades;
+    if (!this.pgTrades) return;
+    try {
+      await this.pgTrades.ensureTable();
+      this.trades = await this.pgTrades.loadActive();
+      console.log(`[tradeTracker] Loaded ${this.trades.length} active trades from PostgreSQL`);
+    } catch (err) {
+      console.error("[tradeTracker] init error:", err.message);
+      this.trades = storage.readJson("trades.json", []);
+    }
   }
 
   getLastKnownPrice(symbol) {
@@ -111,6 +126,11 @@ class TradeTracker {
     };
 
     this.trades.push(trade);
+    if (this.pgTrades) {
+      this.pgTrades.insert(trade).catch(err =>
+        console.warn("[tradeTracker] SQL insert error:", err.message)
+      );
+    }
     return { ok: true, trade };
   }
 
@@ -166,6 +186,12 @@ class TradeTracker {
     trade.closeReason = reason;
     trade.closedAt = nowIso();
     trade.closedAtMs = Date.now();
+
+    if (this.pgTrades) {
+      this.pgTrades.updateStatus(trade.id, trade).catch(err =>
+        console.warn("[tradeTracker] SQL closeTrade error:", err.message)
+      );
+    }
 
     return trade;
   }
@@ -327,7 +353,13 @@ class TradeTracker {
       trade.pnlSource = "PO_DRAW";
     }
 
-    this.save();
+    if (this.pgTrades) {
+      this.pgTrades.updateStatus(trade.id, trade).catch(err =>
+        console.warn("[tradeTracker] SQL updateStatus error:", err.message)
+      );
+    } else {
+      this.save();
+    }
   }
 
   list({ limit = 100 } = {}) {
@@ -407,6 +439,7 @@ class TradeTracker {
   }
 
   save() {
+    if (this.pgTrades) return; // SQL writes happen per-operation
     storage.writeJson("trades.json", this.trades);
   }
 }

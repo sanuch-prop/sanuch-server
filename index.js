@@ -1184,7 +1184,13 @@ async function boot() {
     && !!process.env.DATABASE_URL;
   if (USE_PG) {
     console.log("[boot] PostgreSQL mode — loading data from Supabase...");
-    await require("./src/pgStorage").loadAll();
+    const pgStorage = require("./src/pgStorage");
+    await pgStorage.loadAll();
+    // Migrate trades and tasks to proper SQL tables
+    const PgTrades = require("./src/pgTrades");
+    const pgTrades = new PgTrades(pgStorage.getPool());
+    await tradeTracker.init(pgTrades);
+    console.log("[boot] Trades SQL table ready.");
   }
   initStoreStates();
 
