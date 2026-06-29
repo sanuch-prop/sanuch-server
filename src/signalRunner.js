@@ -29,7 +29,7 @@ const REASON_RU = {
 };
 
 class SignalRunner {
-  constructor({ tickStore, candleBuilder, taskStore, payoutStore, tradeTracker, depositStore, userStore = null }) {
+  constructor({ tickStore, candleBuilder, taskStore, payoutStore, tradeTracker, depositStore, userStore = null, licenseStore = null }) {
     this.tickStore = tickStore;
     this.candleBuilder = candleBuilder;
     this.taskStore = taskStore;
@@ -37,6 +37,7 @@ class SignalRunner {
     this.tradeTracker = tradeTracker || null;
     this.depositStore = depositStore || null;
     this.userStore = userStore || null;
+    this.licenseStore = licenseStore || null;
 
     this.config = {
       ...CONFIG.autoSignal,
@@ -593,6 +594,19 @@ class SignalRunner {
     const primaryResult = this._doScan({ force });
     for (const [userId, userState] of this.users) {
       if (!userState.config.enabled && !force) continue;
+
+      // License gate: skip expired/blocked users, auto-disable to avoid repeated checks.
+      if (this.licenseStore) {
+        const lic = this.licenseStore.getStatus(userId);
+        if (lic && (lic.status === "expired" || lic.status === "blocked")) {
+          if (userState.config.enabled) {
+            userState.config.enabled = false;
+            console.log(`[SignalRunner] user ${userId} auto-disabled: license ${lic.status}`);
+          }
+          continue;
+        }
+      }
+
       try {
         this._withUserState(userId, userState, () => this._doScan({ force }));
       } catch (err) {

@@ -54,7 +54,7 @@ const payoutStore = new PayoutStore();
 const depositStore = new DepositStore();
 const userStore = new UserStore();
 const tradeTracker = new TradeTracker(tickStore, candleBuilder);
-const signalRunner = new SignalRunner({ tickStore, candleBuilder, taskStore, payoutStore, tradeTracker, depositStore, userStore });
+const signalRunner = new SignalRunner({ tickStore, candleBuilder, taskStore, payoutStore, tradeTracker, depositStore, userStore, licenseStore });
 
 // АРХИТЕКТУРНОЕ ИСПРАВЛЕНИЕ: Восстановление состояния при перезапуске сервера
 function initStoreStates() {
@@ -775,6 +775,15 @@ async function handle(req, res) {
         openedTrade = tradeTracker.openFromTask(result.task).trade || null;
         if (openedTrade && body.externalId) {
           openedTrade.externalId = String(body.externalId);
+        }
+        // Count trade against license quota for multi-user accounts.
+        const taskUserId = result.task.userId;
+        const primaryId = signalRunner.config.userId || CONFIG.autoSignal.userId;
+        if (taskUserId && taskUserId !== primaryId && taskUserId !== "default-user") {
+          const licResult = licenseStore.countTrade(taskUserId, 1);
+          if (!licResult.ok) {
+            console.log(`[license] User ${taskUserId} trade quota hit: ${licResult.status} (${licResult.tradesUsed}/${licResult.tradesLimit})`);
+          }
         }
       }
 
