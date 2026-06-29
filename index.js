@@ -56,6 +56,18 @@ const userStore = new UserStore();
 const tradeTracker = new TradeTracker(tickStore, candleBuilder);
 const signalRunner = new SignalRunner({ tickStore, candleBuilder, taskStore, payoutStore, tradeTracker, depositStore, userStore, licenseStore });
 
+// Loads all CLOSED trades for the active deposit run — queries PostgreSQL if available
+// so trades older than the 30-min in-memory window are included.
+async function depositTradesFor(depStore, tracker) {
+  const active = depStore.data?.active;
+  if (!active) return tracker.trades;
+  try {
+    return await tracker.getTradesForDeposit(active.startedAtMs || 0, active.accountMode || "REAL");
+  } catch (e) {
+    return tracker.trades;
+  }
+}
+
 // АРХИТЕКТУРНОЕ ИСПРАВЛЕНИЕ: Восстановление состояния при перезапуске сервера
 function initStoreStates() {
   console.log("[init] Загрузка сохраненного состояния с диска...");
@@ -237,7 +249,7 @@ async function handle(req, res) {
         trades: { ...tradeTracker.stats(), byIndicator: tradeTracker.statsByIndicator() },
         payouts: payoutStore.state(),
         auto: signalRunner.status(),
-        deposits: depositStore.state(tradeTracker.trades, payoutStore)
+        deposits: depositStore.state(await depositTradesFor(depositStore, tradeTracker), payoutStore)
       });
     }
 
@@ -706,7 +718,8 @@ async function handle(req, res) {
     }
 
     if (req.method === "GET" && pathname === "/deposits/active") {
-      return send(res, 200, depositStore.calculate(tradeTracker.trades, payoutStore));
+      const depTrades = await depositTradesFor(depositStore, tradeTracker);
+      return send(res, 200, depositStore.calculate(depTrades, payoutStore));
     }
 
     if (req.method === "POST" && pathname === "/deposits/select") {
@@ -714,9 +727,10 @@ async function handle(req, res) {
       if (!body) return send(res, 400, { ok: false, error: "BAD_JSON" });
 
       const result = depositStore.select(body);
+      const depTrades = await depositTradesFor(depositStore, tradeTracker);
       return send(res, 200, {
         ...result,
-        calculated: depositStore.calculate(tradeTracker.trades, payoutStore)
+        calculated: depositStore.calculate(depTrades, payoutStore)
       });
     }
 

@@ -365,6 +365,25 @@ class TradeTracker {
     }
   }
 
+  // Returns all closed trades for a deposit run. When pgTrades is available,
+  // queries the DB to include trades older than the 30-min in-memory window.
+  async getTradesForDeposit(sinceMs, accountMode) {
+    if (this.pgTrades) {
+      try {
+        return await this.pgTrades.loadForDeposit(sinceMs, accountMode);
+      } catch (err) {
+        console.warn("[tradeTracker] loadForDeposit error:", err.message);
+      }
+    }
+    // Fallback: filter in-memory trades
+    const mode = String(accountMode || "REAL").toUpperCase();
+    return this.trades.filter(t =>
+      t.status === "CLOSED" &&
+      (t.closedAtMs || 0) >= sinceMs &&
+      String(t.accountMode || "").toUpperCase() === mode
+    );
+  }
+
   list({ limit = 100 } = {}) {
     return this.trades.slice(-Number(limit || 100)).reverse();
   }

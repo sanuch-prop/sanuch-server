@@ -138,6 +138,19 @@ class PgTrades {
     );
   }
 
+  // Load all CLOSED trades for a deposit run (since plan startedAtMs, matching accountMode).
+  async loadForDeposit(sinceMs, accountMode) {
+    const { rows } = await this.pool.query(
+      `SELECT * FROM trades
+       WHERE status = 'CLOSED'
+         AND closed_at_ms >= $1
+         AND (account_mode = $2 OR account_mode = LOWER($2))
+       ORDER BY opened_at_ms ASC`,
+      [sinceMs, String(accountMode || "REAL")]
+    );
+    return rows.map(rowToTrade);
+  }
+
   async list({ userId, limit = 100 } = {}) {
     if (userId) {
       const { rows } = await this.pool.query(
