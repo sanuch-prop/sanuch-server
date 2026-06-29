@@ -38,6 +38,7 @@ const TradeTracker = require("./src/tradeTracker");
 const PayoutStore = require("./src/payoutStore");
 const SignalRunner = require("./src/signalRunner");
 const DepositStore = require("./src/depositStore");
+const UserStore = require("./src/userStore");
 const dashboardPage = require("./src/dashboardPage");
 const adminPanel = require("./src/adminPanel");
 const { INDICATOR_CATEGORIES, INDICATORS } = require("./src/indicatorData");
@@ -51,8 +52,9 @@ const candleBuilder = new CandleBuilder();
 const taskStore = new TaskStore();
 const payoutStore = new PayoutStore();
 const depositStore = new DepositStore();
+const userStore = new UserStore();
 const tradeTracker = new TradeTracker(tickStore, candleBuilder);
-const signalRunner = new SignalRunner({ tickStore, candleBuilder, taskStore, payoutStore, tradeTracker, depositStore });
+const signalRunner = new SignalRunner({ tickStore, candleBuilder, taskStore, payoutStore, tradeTracker, depositStore, userStore });
 
 // АРХИТЕКТУРНОЕ ИСПРАВЛЕНИЕ: Восстановление состояния при перезапуске сервера
 function initStoreStates() {
@@ -808,6 +810,75 @@ async function handle(req, res) {
       licenseStore.getOrCreate(pid);
       const result = licenseStore.countTrade(pid, body.count);
       return send(res, 200, result);
+    }
+
+    // ── MULTI-USER MANAGEMENT ─────────────────────────────────────────────────
+    // All /users/* endpoints require admin token.
+
+    // GET /users  → list all registered users and their runtime status
+    if (req.method === "GET" && pathname === "/users") {
+      if (!isAdmin(req)) return send(res, 403, { ok: false, error: "Forbidden" });
+      const stored = userStore.list();
+      const runtime = signalRunner.allUsersStatus();
+      const runtimeMap = new Map(runtime.map(u => [u.userId, u]));
+      return send(res, 200, {
+        ok: true,
+        users: stored.map(u => ({
+          ...u,
+          runtime: runtimeMap.get(u.userId) || null
+        }))
+      });
+    }
+
+    // POST /users  → register / update a user
+    // Body: { userId, clientId, config: { ... } }
+    if (req.method === "POST" && pathname === "/users") {
+      if (!isAdmin(req)) return send(res, 403, { ok: false, error: "Forbidden" });
+      const body = parseJsonSafe(await readBody(req));
+      if (!body || !body.userId) return send(res, 400, { ok: false, error: "userId required" });
+      const result = signalRunner.registerUser(body.userId, body);
+      return send(res, 200, result || { ok: true, userId: body.userId });
+    }
+
+    // GET /users/:userId  → per-user status
+    if (req.method === "GET" && /^\/users\/[^/]+$/.test(pathname)) {
+      if (!isAdmin(req)) return send(res, 403, { ok: false, error: "Forbidden" });
+      const userId = decodeURIComponent(pathname.slice(7));
+      const status = signalRunner.getUserStatus(userId);
+      if (!status) return send(res, 404, { ok: false, error: "USER_NOT_FOUND" });
+      return send(res, 200, status);
+    }
+
+    // DELETE /users/:userId  → remove user
+    if (req.method === "DELETE" && /^\/users\/[^/]+$/.test(pathname)) {
+      if (!isAdmin(req)) return send(res, 403, { ok: false, error: "Forbidden" });
+      const userId = decodeURIComponent(pathname.slice(7));
+      return send(res, 200, signalRunner.unregisterUser(userId));
+    }
+
+    // POST /users/:userId/config  → update user config
+    if (req.method === "POST" && /^\/users\/[^/]+\/config$/.test(pathname)) {
+      if (!isAdmin(req)) return send(res, 403, { ok: false, error: "Forbidden" });
+      const userId = decodeURIComponent(pathname.split("/")[2]);
+      const body = parseJsonSafe(await readBody(req));
+      if (!body) return send(res, 400, { ok: false, error: "BAD_JSON" });
+      const result = signalRunner.updateUserConfig(userId, body);
+      if (!result || !result.ok) return send(res, 404, { ok: false, error: result?.error || "USER_NOT_FOUND" });
+      return send(res, 200, result);
+    }
+
+    // POST /users/:userId/start  → enable user trading
+    if (req.method === "POST" && /^\/users\/[^/]+\/start$/.test(pathname)) {
+      if (!isAdmin(req)) return send(res, 403, { ok: false, error: "Forbidden" });
+      const userId = decodeURIComponent(pathname.split("/")[2]);
+      return send(res, 200, signalRunner.startUser(userId));
+    }
+
+    // POST /users/:userId/stop  → disable user trading
+    if (req.method === "POST" && /^\/users\/[^/]+\/stop$/.test(pathname)) {
+      if (!isAdmin(req)) return send(res, 403, { ok: false, error: "Forbidden" });
+      const userId = decodeURIComponent(pathname.split("/")[2]);
+      return send(res, 200, signalRunner.stopUser(userId));
     }
 
     // ── ADMIN ──────────────────────────────────────────────────────────────────

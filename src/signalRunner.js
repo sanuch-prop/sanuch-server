@@ -29,13 +29,14 @@ const REASON_RU = {
 };
 
 class SignalRunner {
-  constructor({ tickStore, candleBuilder, taskStore, payoutStore, tradeTracker, depositStore }) {
+  constructor({ tickStore, candleBuilder, taskStore, payoutStore, tradeTracker, depositStore, userStore = null }) {
     this.tickStore = tickStore;
     this.candleBuilder = candleBuilder;
     this.taskStore = taskStore;
     this.payoutStore = payoutStore;
     this.tradeTracker = tradeTracker || null;
     this.depositStore = depositStore || null;
+    this.userStore = userStore || null;
 
     this.config = {
       ...CONFIG.autoSignal,
@@ -61,6 +62,178 @@ class SignalRunner {
 
     // Event log (max 120 entries, shown in UI)
     this.eventLog = [];
+
+    // Multi-user: Map<userId, UserState>. Null when running primary user scan.
+    this._currentUserId = null;
+    this.users = new Map();
+
+    if (userStore) {
+      const primaryId = this.config.userId || CONFIG.autoSignal.userId;
+      for (const u of userStore.list()) {
+        if (u.userId !== primaryId) {
+          this.users.set(u.userId, this._createUserState(u.config || {}, u));
+        }
+      }
+    }
+  }
+
+  // ─── MULTI-USER SUPPORT ──────────────────────────────────────────────────────
+
+  // Create a fresh per-user runtime state from a config snapshot.
+  _createUserState(config, meta = {}) {
+    const merged = { ...CONFIG.autoSignal, ...config, enabled: false };
+    return {
+      config: merged,
+      pendingConfirm: {},
+      lastCreatedAtByKey: {},
+      comboStates: new Map(),
+      combos: Array.isArray(merged.combos) ? merged.combos.filter(c => c && c.id && c.condition) : [],
+      lastSkips: {},
+      lastSignals: {},
+      createdTotal: 0,
+      duplicateTotal: 0,
+      skippedTotal: 0,
+      lastEvent: null,
+      eventLog: [],
+      meta
+    };
+  }
+
+  // Swap instance fields to userState, run fn(), then flush mutations back.
+  // Node.js is single-threaded so this swap is safe — no concurrent scan() calls.
+  _withUserState(userId, userState, fn) {
+    const FIELDS = [
+      'config', 'pendingConfirm', 'lastCreatedAtByKey',
+      'comboStates', 'combos', 'lastSkips', 'lastSignals',
+      'createdTotal', 'duplicateTotal', 'skippedTotal',
+      'lastEvent', 'eventLog', '_currentUserId'
+    ];
+    const saved = {};
+    for (const f of FIELDS) saved[f] = this[f];
+
+    this.config             = userState.config;
+    this.pendingConfirm     = userState.pendingConfirm;
+    this.lastCreatedAtByKey = userState.lastCreatedAtByKey;
+    this.comboStates        = userState.comboStates;
+    this.combos             = userState.combos;
+    this.lastSkips          = userState.lastSkips;
+    this.lastSignals        = userState.lastSignals;
+    this.createdTotal       = userState.createdTotal;
+    this.duplicateTotal     = userState.duplicateTotal;
+    this.skippedTotal       = userState.skippedTotal;
+    this.lastEvent          = userState.lastEvent;
+    this.eventLog           = userState.eventLog;
+    this._currentUserId     = userId;
+
+    let result;
+    try {
+      result = fn();
+    } finally {
+      userState.config             = this.config;
+      userState.pendingConfirm     = this.pendingConfirm;
+      userState.lastCreatedAtByKey = this.lastCreatedAtByKey;
+      userState.comboStates        = this.comboStates;
+      userState.combos             = this.combos;
+      userState.lastSkips          = this.lastSkips;
+      userState.lastSignals        = this.lastSignals;
+      userState.createdTotal       = this.createdTotal;
+      userState.duplicateTotal     = this.duplicateTotal;
+      userState.skippedTotal       = this.skippedTotal;
+      userState.lastEvent          = this.lastEvent;
+      userState.eventLog           = this.eventLog;
+      for (const f of FIELDS) this[f] = saved[f];
+    }
+    return result;
+  }
+
+  // Register or update an additional user (non-primary).
+  registerUser(userId, userRecord) {
+    userId = String(userId);
+    if (this.users.has(userId)) {
+      const us = this.users.get(userId);
+      if (userRecord.config) {
+        Object.assign(us.config, userRecord.config);
+        if (Array.isArray(us.config.combos)) {
+          us.combos = us.config.combos.filter(c => c && c.id && c.condition);
+        }
+      }
+      if (userRecord.clientId) us.meta = { ...us.meta, ...userRecord };
+    } else {
+      this.users.set(userId, this._createUserState(userRecord.config || {}, userRecord));
+    }
+    if (this.userStore) this.userStore.upsert(userId, userRecord);
+    return this.getUserStatus(userId);
+  }
+
+  unregisterUser(userId) {
+    this.users.delete(String(userId));
+    if (this.userStore) this.userStore.remove(String(userId));
+    return { ok: true };
+  }
+
+  startUser(userId) {
+    const us = this.users.get(String(userId));
+    if (!us) return { ok: false, error: "USER_NOT_FOUND" };
+    us.config.enabled = true;
+    if (this.userStore) this.userStore.upsert(userId, { config: { enabled: true } });
+    return { ok: true, userId, enabled: true };
+  }
+
+  stopUser(userId) {
+    const us = this.users.get(String(userId));
+    if (!us) return { ok: false, error: "USER_NOT_FOUND" };
+    us.config.enabled = false;
+    us.pendingConfirm = {};
+    us.comboStates.clear();
+    if (this.userStore) this.userStore.upsert(userId, { config: { enabled: false } });
+    return { ok: true, userId, enabled: false };
+  }
+
+  updateUserConfig(userId, patch) {
+    const us = this.users.get(String(userId));
+    if (!us) return { ok: false, error: "USER_NOT_FOUND" };
+    const allowed = [
+      "enabled", "userId", "clientId", "accountMode", "watchlist",
+      "subscribeAllAssets", "timeframe", "fast", "slow", "amount",
+      "expirySec", "minScore", "minAgree", "aggregation", "indicators",
+      "cooldownMs", "source", "usePayoutFilter", "minPayoutPercent",
+      "useConfirmRule", "maxOpenTrades",
+      "martingaleEnabled", "martingaleMultiplier", "martingaleSteps", "martingaleReset",
+      "timezoneOffsetHours", "combos"
+    ];
+    for (const key of allowed) {
+      if (Object.prototype.hasOwnProperty.call(patch, key)) us.config[key] = patch[key];
+    }
+    if (Array.isArray(us.config.combos)) {
+      us.combos = us.config.combos.filter(c => c && c.id && c.condition);
+    }
+    if (this.userStore) this.userStore.upsert(userId, { config: us.config });
+    return this.getUserStatus(userId);
+  }
+
+  getUserStatus(userId) {
+    const us = this.users.get(String(userId));
+    if (!us) return null;
+    return {
+      ok: true,
+      userId,
+      enabled: us.config.enabled,
+      config: us.config,
+      lastEvent: us.lastEvent,
+      lastSkips: us.lastSkips,
+      createdTotal: us.createdTotal,
+      eventLog: us.eventLog.slice(0, 40)
+    };
+  }
+
+  allUsersStatus() {
+    return [...this.users.entries()].map(([userId, us]) => ({
+      userId,
+      enabled: us.config.enabled,
+      clientId: us.config.clientId || us.meta?.clientId || null,
+      createdTotal: us.createdTotal,
+      lastEvent: us.lastEvent
+    }));
   }
 
   // Считает шаг мартингейла и ставку для данного символа.
@@ -132,14 +305,14 @@ class SignalRunner {
 
     const trades = this.tradeTracker?.trades || [];
     const todayStart = new Date().setHours(0, 0, 0, 0);
-    // comboId в overrides → фильтруем только сделки этой связки
-    // без comboId → только standalone-сделки индикаторов (не combo)
-    // Считаем только сделки текущего дня — исключаем хвост убытков из прошлых сессий
+    // Isolate martingale chain per-user when running in multi-user context.
+    const userId = cfg.userId;
+    const filterByUser = userId && userId !== CONFIG.autoSignal.userId;
     const closed = trades
       .filter(t => {
         if (t.status !== "CLOSED") return false;
         if ((t.closedAtMs || 0) < todayStart) return false;
-        // "any_signal": смотрим убытки по всем парам (глобальная цепочка до первого выигрыша)
+        if (filterByUser && t.userId !== userId) return false;
         if (recoveryMode !== "any_signal" && t.symbol !== symbol) return false;
         if (overrides.comboId) return t.meta?.comboId === overrides.comboId;
         return t.source !== "COMBO";
@@ -403,9 +576,22 @@ class SignalRunner {
     return syms.filter(s => s.endsWith("_otc") || !otcSet.has(s + "_otc"));
   }
 
+  // Fan-out: scan primary user, then all additional users in one tick.
   scan({ force = false } = {}) {
     this.lastScanAt = nowIso();
+    const primaryResult = this._doScan({ force });
+    for (const [userId, userState] of this.users) {
+      if (!userState.config.enabled && !force) continue;
+      try {
+        this._withUserState(userId, userState, () => this._doScan({ force }));
+      } catch (err) {
+        console.warn(`[SignalRunner] user ${userId} scan error:`, err.message);
+      }
+    }
+    return primaryResult;
+  }
 
+  _doScan({ force = false } = {}) {
     if (!this.config.enabled && !force) {
       return { ok: true, enabled: false, created: [], skipped: [{ reason: "AUTO_DISABLED" }] };
     }
@@ -1262,7 +1448,11 @@ class SignalRunner {
   }
 
   save() {
-    storage.writeJson("auto-config.json", this.config);
+    if (this._currentUserId && this.userStore) {
+      this.userStore.upsert(this._currentUserId, { config: this.config });
+    } else {
+      storage.writeJson("auto-config.json", this.config);
+    }
   }
 }
 
