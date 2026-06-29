@@ -127,6 +127,8 @@ class SignalRunner {
     if (!isEnabled) return { amount: baseAmount, step: 0 };
 
     const maxSteps = Math.max(1, Number(overrides.maxSteps || cfg.martingaleSteps) || 3);
+    // "any_signal": глобальная цепочка по всем парам; "same_signal": только эта пара (по умолчанию)
+    const recoveryMode = overrides.recoveryMode || "same_signal";
 
     const trades = this.tradeTracker?.trades || [];
     const todayStart = new Date().setHours(0, 0, 0, 0);
@@ -135,8 +137,10 @@ class SignalRunner {
     // Считаем только сделки текущего дня — исключаем хвост убытков из прошлых сессий
     const closed = trades
       .filter(t => {
-        if (t.symbol !== symbol || t.status !== "CLOSED") return false;
+        if (t.status !== "CLOSED") return false;
         if ((t.closedAtMs || 0) < todayStart) return false;
+        // "any_signal": смотрим убытки по всем парам (глобальная цепочка до первого выигрыша)
+        if (recoveryMode !== "any_signal" && t.symbol !== symbol) return false;
         if (overrides.comboId) return t.meta?.comboId === overrides.comboId;
         return t.source !== "COMBO";
       })
@@ -173,6 +177,104 @@ class SignalRunner {
 
   getMartingaleAmount(symbol, currentPayoutPercent) {
     return this.getMartingaleInfo(symbol, currentPayoutPercent).amount;
+  }
+
+  // Немедленное перекрытие: открывает сделку сразу после убытка без ожидания сигнала.
+  // Вызывается в начале каждого scan() — находит недавние LOSS и создаёт задачи.
+  _checkImmediateRecovery() {
+    if (!this.config.enabled || !this.taskStore) return;
+
+    const trades = this.tradeTracker?.trades || [];
+    const cutoffMs = Date.now() - 45 * 1000; // последние 45 секунд
+
+    const recentLosses = trades.filter(t =>
+      t.status === "CLOSED" && t.result === "LOSS" && (t.closedAtMs || 0) >= cutoffMs
+    );
+    if (!recentLosses.length) return;
+
+    const indConfigMap = new Map(
+      (this.config.indicators || []).map(c => [String(c.id || "").toLowerCase(), c])
+    );
+
+    for (const trade of recentLosses) {
+      const idemKey = `IMMEDIATE_MG_${trade.id}`;
+      if (this.taskStore.seenIdemKeys?.has(idemKey)) continue; // уже обработали
+
+      // Найти настройки индикатора по мета-данным сделки
+      const indicators = trade.meta?.strategy?.indicators || [];
+      let iSett = {};
+      for (const ind of indicators) {
+        const indConf = indConfigMap.get(String(ind.id || "").toLowerCase()) || {};
+        const s = indConf.settings || {};
+        if (s.mgRecoveryMode !== undefined || s['mg1_enabled'] !== undefined) {
+          iSett = s;
+          break;
+        }
+      }
+
+      // Только режим "immediate"
+      if ((iSett.mgRecoveryMode || "same_signal") !== "immediate") continue;
+
+      // Проверить, что мартингейл включён
+      const hasIndMg = iSett['mg1_enabled'] !== undefined || iSett['mg1_recoveries'] !== undefined || iSett.mgStepCount !== undefined;
+      if (!hasIndMg || iSett['mg1_enabled'] === 'off') continue;
+
+      // Блок: уже есть открытая сделка или задача на эту пару
+      const hasOpen = trades.some(t => t.symbol === trade.symbol && t.status === "OPEN");
+      const hasPending = this.taskStore.tasks.some(t =>
+        t.symbol === trade.symbol && ["CREATED", "DELIVERED"].includes(t.status)
+      );
+      if (hasOpen || hasPending) continue;
+
+      // Рассчитать сумму перекрытия
+      const baseAmount = Number(iSett.amount || this.config.amount) || 1;
+      const rawPayout = this.payoutStore?.get(trade.symbol) || null;
+      const payoutAgeMs = rawPayout ? (Date.now() - (rawPayout.updatedAtMs || 0)) : Infinity;
+      const payout = payoutAgeMs < 2 * 60 * 60 * 1000 ? rawPayout : null;
+      const payoutPct = payout?.payoutPercent || null;
+      const maxRecoveries = this._getMgMaxRecoveries(iSett);
+      const mgInfo = this.getMartingaleInfo(trade.symbol, payoutPct, { enabled: true, maxSteps: maxRecoveries, baseAmount });
+
+      if (mgInfo.step === 0) continue;
+
+      // Проверить лимит шагов
+      const activeMgStep = this._getMgStepForLoss(iSett, mgInfo.step);
+      if (!activeMgStep) {
+        this._logEvent("skip", trade.symbol, `IMMEDIATE: все шаги мартингейла исчерпаны (шаг ${mgInfo.step})`);
+        continue;
+      }
+
+      const stepExpiry = activeMgStep.expiry || Number(this.config.expirySec) || 45;
+      const action = activeMgStep.direction === 'reverse'
+        ? (trade.action === 'call' ? 'put' : 'call')
+        : trade.action;
+
+      this._logEvent("info", trade.symbol, `Мартингейл IMMEDIATE шаг ${mgInfo.step}: ставка $${mgInfo.amount} ${action} ${stepExpiry}с`);
+
+      const taskResult = this.taskStore.createOpenTradeTask({
+        userId: this.config.userId,
+        clientId: this.config.clientId,
+        accountMode: this.config.accountMode,
+        symbol: trade.symbol,
+        action,
+        amount: mgInfo.amount,
+        expirySec: stepExpiry,
+        source: this.config.source,
+        signalId: idemKey,
+        idemKey,
+        reason: `Мартингейл IMMEDIATE шаг ${mgInfo.step}`,
+        meta: {
+          auto: true,
+          martingale: { step: mgInfo.step, baseAmount, tradeAmount: mgInfo.amount, mode: "immediate" },
+          strategy: { name: "Мгновенное перекрытие", indicators }
+        }
+      });
+
+      if (taskResult.ok) {
+        this.createdTotal++;
+        this._logEvent("trade", trade.symbol, `IMMEDIATE задача: ${action} $${mgInfo.amount} ${stepExpiry}с [шаг ${mgInfo.step}]`);
+      }
+    }
   }
 
   // Суммирует pnl закрытых сегодня сделок по произвольному фильтру
@@ -307,6 +409,9 @@ class SignalRunner {
     if (!this.config.enabled && !force) {
       return { ok: true, enabled: false, created: [], skipped: [{ reason: "AUTO_DISABLED" }] };
     }
+
+    // Немедленное перекрытие: открыть recovery-задачи для недавних убытков (режим "immediate")
+    try { this._checkImmediateRecovery(); } catch (_) {}
 
     // Блокировка по разгону: если активный день FAILED_LOCKED — торговля остановлена
     if (this.depositStore) {
@@ -603,15 +708,19 @@ class SignalRunner {
       const indMgEnabled = hasIndMg ? (iSett['mg1_enabled'] !== 'off') : null;
       const mgEnabled  = indMgEnabled !== null ? indMgEnabled : !!this.config.martingaleEnabled;
       const payoutPct  = payout?.payoutPercent || null;
+      // Режим перекрытия: same_signal (по умолчанию), any_signal, immediate
+      const recoveryMode = iSett.mgRecoveryMode || "same_signal";
 
       let mgInfo = { amount: baseAmount, step: 0 };
       let activeMgStep = null;
 
-      if (mgEnabled) {
+      // "immediate": перекрытие открывается без сигнала через _checkImmediateRecovery();
+      // сигнальный путь всегда использует базовую ставку
+      if (mgEnabled && recoveryMode !== "immediate") {
         const maxRecoveries = hasIndMg
           ? this._getMgMaxRecoveries(iSett)
           : (Number(this.config.martingaleSteps) || 3);
-        mgInfo = this.getMartingaleInfo(symbol, payoutPct, { enabled: true, maxSteps: maxRecoveries, baseAmount });
+        mgInfo = this.getMartingaleInfo(symbol, payoutPct, { enabled: true, maxSteps: maxRecoveries, baseAmount, recoveryMode });
 
         if (mgInfo.step > 0 && hasIndMg) {
           activeMgStep = this._getMgStepForLoss(iSett, mgInfo.step);
@@ -1057,6 +1166,7 @@ class SignalRunner {
     const baseAmount = Number(cs.amount || combo.amount || this.config.amount || 1);
     const hasMg = iSett['mg1_enabled'] !== undefined || iSett['mg1_recoveries'] !== undefined || iSett.mgStepCount !== undefined;
     const mgEnabled = hasMg ? (iSett['mg1_enabled'] !== 'off') : false;
+    const comboRecoveryMode = iSett.mgRecoveryMode || "same_signal";
 
     let tradeAmount = baseAmount;
     // If combo_settings has expirySec > 0, it overrides the individual indicator's expiry
@@ -1065,10 +1175,11 @@ class SignalRunner {
     let tradeAction = action;
     let mgStep = 0;
 
-    if (mgEnabled) {
+    // "immediate" для связок: перекрытие без сигнала через _checkImmediateRecovery()
+    if (mgEnabled && comboRecoveryMode !== "immediate") {
       const payoutPct = payout?.payoutPercent || null;
       const maxRecoveries = this._getMgMaxRecoveries(iSett);
-      const mgInfo = this.getMartingaleInfo(symbol, payoutPct, { enabled: true, maxSteps: maxRecoveries, baseAmount, comboId: combo.id });
+      const mgInfo = this.getMartingaleInfo(symbol, payoutPct, { enabled: true, maxSteps: maxRecoveries, baseAmount, comboId: combo.id, recoveryMode: comboRecoveryMode });
       mgStep = mgInfo.step;
 
       if (mgStep > 0) {
